@@ -1,21 +1,29 @@
 'IMAP mailbox wrapper'
 import re
 import os
-import time
+import gzip
+import email
 import random
+import chardet
 import imaplib
 import datetime
 import mimetypes
 import logging; log = logging.getLogger(__name__)
-from email import message_from_string
+from calendar import timegm
+from datetime import datetime
+from email.generator import Generator
 from email.parser import HeaderParser
+from email.utils import mktime_tz, parsedate_tz, formatdate, parseaddr, formataddr, getaddresses
 from email.header import decode_header, HeaderParseError
-from email.utils import parsedate_tz
+
+
+__all__ = ['IMAP4', 'IMAP4_SSL', 'IMAPError', 'Email', 'format_tags', 'build_message']
 
 
 pattern_folder = re.compile(r'\((?P<flags>.*?)\) "(?P<delimiter>.*)" (?:\{.*\})?(?P<name>.*)')
 pattern_uid = re.compile(r'UID (\d+)')
 pattern_whitespace = re.compile(r'\s+')
+pattern_domain = re.compile(r'@[^,]+|/[^,]+')
 
 
 class _IMAPExtension(object):
@@ -24,6 +32,16 @@ class _IMAPExtension(object):
     def __str__(self):
         return '%s@%s:%s' % (self.user, self.host, self.port)
 
+    @classmethod
+    def connect(cls, host, port, user, password):
+        'Connect, login, return class instance'
+        try:
+            server = cls(host, port)
+            server.login(user, password)
+        except Exception, error:
+            raise IMAPError(error)
+        return server
+
     def format_error(self, text, data=None):
         'Format error string'
         return '[%s] %s%s' % (self, text, '\n' + repr(data) if data else '')
@@ -31,10 +49,11 @@ class _IMAPExtension(object):
     @property
     def folders(self):
         'Parse folder names'
+        self.cd()
         folders = []
         r, data = self.list()
         if r != 'OK':
-            raise IMAPError(self.format_error('Could not fetch folders'))
+            raise IMAPError(self.format_error('Could not fetch folders', data))
         for item in data:
             if not item:
                 continue
@@ -43,11 +62,19 @@ class _IMAPExtension(object):
             folders.append(pattern_folder.match(item).groups()[2].lstrip())
         return folders
 
-    def cycle(self, includes=None, excludes=None):
+    def cd(self, folder=None):
+        'Select the specified folder and return message count'
+        r, data = self.select() if folder is None else self.select(folder)
+        if r != 'OK':
+            log.warn(self.format_error('[%s] Could not select folder' % folder, data))
+            return 0
+        return int(data[0])
+
+    def walk(self, includes=None, excludes=None):
         """
         Generate messages from matching folders.
-        Without arguments, it will cycle all folders.
-        With includes, it will cycle only folders with matching names or matching parent names.
+        Without arguments, it will walk all folders.
+        With includes, it will walk only folders with matching names or matching parent names.
         With excludes, it will skip folders with matching names or matching parent names.
         """
         includes = {clean_tag(x) for x in includes} if includes else set()
@@ -62,10 +89,10 @@ class _IMAPExtension(object):
             if excludes.intersection(tags):
                 continue
             # If includes are defined and there are no tags to include, skip the folder
-            if includes and includes.intersection(tags):
+            if includes and not includes.intersection(tags):
                 continue
             # Cycle messages in random order
-            messageCount = int(self.select(folder)[1][0])
+            messageCount = self.cd(folder)
             messageIndices = range(1, messageCount + 1)
             random.shuffle(messageIndices)
             for messageIndex in messageIndices:
@@ -93,10 +120,9 @@ class _IMAPExtension(object):
                     log.warn(format_error('Could not extract uid', data))
                     continue
                 # Yield
-                yield Message(self, int(match.group(1)), tags, data[0][1])
+                yield Email(self, int(match.group(1)), tags, data[0][1])
 
-    def revive(self, folder, when, subject, fromWhom, toWhom, ccWhom, bccWhom, bodyText, bodyHtml, attachmentPaths):
-        !!!
+    def revive(self, targetFolder, message):
         'Upload the message to the targetFolder of the mail server'
         # Find the folder on the mail server
         for folder in self.folders:
@@ -108,12 +134,10 @@ class _IMAPExtension(object):
             self.create(targetFolder)
             folder = targetFolder
         # Append
-        if when is None:
-            when = message.when or datetime.datetime.now()
-        r, data = self.append(folder, '', imaplib.Time2Internaldate(when.timetuple()), str(message))
+        r, data = self.append(folder, '', mktime_tz(parsedate_tz(message['Date'])), message.as_string(False))
         if r != 'OK':
-            pass
-        return 
+            raise IMAPError(self.format_error('Could not revive message', data))
+        return data[0]
 
 
 class IMAP4(_IMAPExtension, imaplib.IMAP4):
@@ -122,11 +146,11 @@ class IMAP4(_IMAPExtension, imaplib.IMAP4):
     def __init__(self, host='', port=143):
         self.host = host
         self.port = port
-        imaplib.IMAP4.__init__(host, port)
+        imaplib.IMAP4.__init__(self, host, port)
 
     def login(self, user, password):
         self.user = user
-        imaplib.IMAP4.login(user, password)
+        imaplib.IMAP4.login(self, user, password)
 
 
 class IMAP4_SSL(_IMAPExtension, imaplib.IMAP4_SSL):
@@ -135,15 +159,15 @@ class IMAP4_SSL(_IMAPExtension, imaplib.IMAP4_SSL):
     def __init__(self, host='', port=993, keyfile=None, certfile=None):
         self.host = host
         self.port = port
-        imaplib.IMAP4.__init__(host, port, keyfile, certfile)
+        imaplib.IMAP4_SSL.__init__(self, host, port, keyfile, certfile)
 
     def login(self, user, password):
         self.user = user
-        imaplib.IMAP4.login(user, password)
+        imaplib.IMAP4_SSL.login(self, user, password)
 
 
-class Message(object):
-    'Convenience class representing an email message from an IMAP mailbox'
+class Email(object):
+    'Convenience class representing an email from an IMAP mailbox'
 
     def __init__(self, server, uid, tags, header):
         self.server = server
@@ -151,28 +175,19 @@ class Message(object):
         self.tags = tags
         # Parse header
         valueByKey = HeaderParser().parsestr(header)
-        def getX(x):
-            'Get value'
-            if not x in valueByKey:
-                return u''
-            value = valueByKey[x]
-            try:
-                packs = decode_header(value)
-            except HeaderParseError:
-                try:
-                    packs = decode_header(value.replace('?==?', '?= =?'))
-                except HeaderParseError:
-                    log.warn(self.format_error('Could not decode header', value))
-                    packs = [(value, 'ascii')]
-            string = ''.join(part.decode(encoding) for part, encoding in packs)
-            return pattern_whitespace.sub(' ', string.strip())
+        def getWhom(field):
+            return ', '.join(formataddr((decode(x), y)) for x, y in getaddresses(valueByKey.get_all(field, [])))
         # Extract fields
-        self.when = datetime.datetime.fromtimestamp(time.mktime(parsedate_tz(message['Date'])[:9])) if 'Date' in message else None
-        self.subject = getX('Subject')
-        self.fromWhom = getX('From')
-        self.toWhom = getX('To')
-        self.ccWhom = getX('CC')
-        self.bccWhom = getX('BCC')
+        if 'Date' in valueByKey:
+            timePack = parsedate_tz(valueByKey['Date'])
+            self.whenUTC = datetime.fromtimestamp(timegm(timePack) if timePack[-1] is None else mktime_tz(timePack)) if timePack else None
+        else:
+            self.whenUTC = None
+        self.subject = decode(valueByKey.get('Subject', ''))
+        self.fromWhom = getWhom('From')
+        self.toWhom = getWhom('To')
+        self.ccWhom = getWhom('CC')
+        self.bccWhom = getWhom('BCC')
 
     def format_error(self, text, data=None):
         'Format error string'
@@ -180,7 +195,7 @@ class Message(object):
 
     @property
     def flags(self):
-        'Get message flags'
+        'Get flags'
         r, data = self.server.uid('fetch', self.uid, '(FLAGS)')
         if r != 'OK':
             raise IMAPError(self.format_error('Could not get flags', data))
@@ -189,57 +204,65 @@ class Message(object):
 
     @flags.setter
     def flags(self, flags):
+        'Set flags'
         r, data = self.server.uid('store', self.uid, 'FLAGS', '(%s)' % ' '.join(flags))
         if r != 'OK':
             raise IMAPError(self.format_error('Could not set flags', data))
 
+    def set_flag(self, flag, on=True):
+        'Set flag on or off'
+        operator = '+' if on else '-'
+        r, data = self.server.uid('store', self.uid, operator + 'FLAGS', '(%s)' % flag)
+        if r != 'OK':
+            raise IMAPError(self.format_error('Could not flag email', data))
+        return self
+
     @property
-    def is_unread(self):
-        'Return True if message is marked as unread'
-            return False
-        return False if r'\Seen' in self.flags else True
+    def seen(self):
+        'Return True if email is marked as seen'
+        return True if r'\Seen' in self.flags else False
 
-    def mark_unread(self):
-        'Mark message as unread'
-        r, data = self.server.uid('store', self.uid, '-FLAGS', r'(\Seen)')
-        if r != 'OK':
-            raise IMAPError(self.format_error('Could not mark message as unread', data))
-        return self
+    @seen.setter
+    def seen(self, on=True):
+        'Flag the email as seen or not'
+        return self.set_flag(r'\Seen', on)
 
-    def mark_deleted(self):
-        'Mark message as deleted'
-        r, data = self.server.uid('store', self.uid, '+FLAGS', r'(\Deleted)')
-        if r != 'OK':
-            raise IMAPError(self.format_error('Could not mark message as deleted', data))
-        return self
+    @property
+    def deleted(self):
+        'Return True if email is marked as deleted'
+        return True if r'\Deleted' in self.flags else False
 
-    def download(self, targetFolderPath):
-        'Save message and its attachments to the hard drive'
+    @deleted.setter
+    def deleted(self, on=True):
+        'Flag the email as deleted or not'
+        return self.set_flag(r'\Deleted', on)
+
+    def save(self, targetPath):
+        """
+        Save email to the hard drive and return a list of parts by index, type, name.
+        Compress the file if the filename ends with .gz
+        """
         try:
-            # Save flags
+            # Get flags
             flags = self.flags
             # Load message
             r, data = self.server.uid('fetch', self.uid, '(RFC822)')
             if r != 'OK':
                 raise IMAPError(self.format_error('Could not fetch message body', data))
-            msg = message_from_string(data[0][1])
+            message = email.message_from_string(data[0][1])
             # Restore flags
             self.flags = flags
         except imaplib.IMAP4.abort, error:
             raise IMAPError(self.format_error('Connection failed while fetching message body', error))
-        # Save parts using a coroutine
-        with open(os.path.join(targetFolderPath, 'parts.txt'), 'wt') as partsFile:
-            partConsumer = _make_partConsumer(targetFolderPath, partsFile)
-            partConsumer.next()
-            for part in msg.walk():
-                # If the content is multipart, then enter the container
-                if 'multipart' == part.get_content_maintype():
-                    continue
-                # Consume part
-                partConsumer.send(part)
-        # Save tags and header
-        open(os.path.join(targetFolderPath, 'tags.txt'), 'wt').write(format_tags(self.tags, '\n'))
-        open(os.path.join(targetFolderPath, 'header.txt'), 'wt').write(format_header(self.when, self.subject, self.fromWhom, self.toWhom, self.ccWhom, self.bccWhom))
+        # Save
+        Generator((gzip.open if targetPath.endswith('.gz') else open)(targetPath, 'wb')).flatten(message)
+        # Gather partPacks
+        partPacks = []
+        for partIndex, part in enumerate(message.walk()):
+            if 'multipart' == part.get_content_maintype():
+                continue
+            partPacks.append((partIndex, part.get_filename(), part.get_content_type()))
+        return partPacks
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -248,130 +271,26 @@ class Message(object):
         return setattr(self, key, value)
 
 
-class IMAPError(Exception):
-    pass
-
-
-def _make_partConsumer(targetFolderPath, partsFile):
-    'Make a coroutine that saves the parts of an email message to the hard drive'
-    index = 1
-    while True:
-        part = (yield)
-        payload = part.get_payload(decode=True)
-        if not payload:
-            continue
-        contentType = part.get_content_type().lower()
-        fileName = part.get_filename()
-
-
-
-        if contentType in ['text/plain', 'text/html']:
-            payload = payload.decode(part.get_content_charset() or charset.detect(payload)['encoding']).encode('utf8')
-            extension = mimetypes.guess_extension(contentType)
-        else:
-            extension = '.bin'
-
-
-
-            open(os.path.join(targetFolderPath, partName + extension)).write(payload.encode('utf8'))
-        else:
-            open(os.path.join(targetFolderPath, partName
-
-
-
-            
-        targetPath = os.path.join(targetFolderPath, 'part%d%s' % (index, extension)
-
-        # Encode decode?
-        open(os.path.join(targetFolderPath, partName), 'wb').write(payload)
-        
-
-
-
-        # Increment
-        count += 1
-
-
-                else:
-                    extension = mimetypes.guess_extension(contentType)
-                    # If we could not guess an extension,
-                    if not extension:
-                        # Use generic extension
-                        extension = '.bin'
-                filename = 'part%03d%s' % (counter, extension)
-
-            fp = open(os.path.join(targetFolderPath, filename), 'wb')
-            fp.write(payload)
-            fp.close()
-        # Return
-        return True
-
-
-pattern_address = re.compile(r'<.*?>')
-pattern_bracket = re.compile(r'<|>')
-pattern_domain = re.compile(r'@[^,]+|/[^,]+')
-
-
-def format_header(when, subject, fromWhom, toWhom, ccWhom, bccWhom):
-    pass
-def formatHeader(subject, when, fromWhom, toWhom, ccWhom, bccWhom):
-    # Unicode everything
-    subject = unicodeSafely(subject)
-    fromWhom = unicodeSafely(fromWhom)
-    toWhom = unicodeSafely(toWhom)
-    ccWhom = unicodeSafely(ccWhom)
-    bccWhom = unicodeSafely(bccWhom)
-    # Build header
-    header = 'From:       %(fromWhom)s\nDate:       %(date)s\nSubject:    %(subject)s' % {
-        'fromWhom': fromWhom,
-        'date': when.strftime('%A, %B %d, %Y    %I:%M:%S %p'),
-        'subject': subject,
-    }
-    # Add optional features
-    if toWhom:
-        header += '\nTo:         %s' % toWhom
-    if ccWhom:
-        header += '\nCC:         %s' % ccWhom
-    if bccWhom:
-        header += '\nBCC:        %s' % bccWhom
-    # Return
-    return header
-
-
-def format_to_cc_bcc:
-    pass
-
-def formatToWhomString(toWhom, ccWhom, bccWhom):
-    return ', '.join(filter(lambda x: x, (y.strip() for y in (toWhom, ccWhom, bccWhom))))
+def decode(text):
+    'Decode text into utf8'
+    try:
+        packs = decode_header(text)
+    except HeaderParseError:
+        try:
+            packs = decode_header(text.replace('?==?', '?= =?'))
+        except HeaderParseError:
+            log.warn(self.format_error('Could not decode header', text))
+            packs = [(text, 'utf8')]
+    string = ''.join(part.decode(encoding or 'utf8', errors='ignore') for part, encoding in packs)
+    return pattern_whitespace.sub(' ', string.strip())
 
 
 def clean_nickname(text):
-    pass
-def formatNameString(nameString):
-    # Split the string
-    oldTerms = nameString.split(',')
-    newTerms = []
-    # For each term,
-    for oldTerm in oldTerms:
-        # Try removing the address
-        newTerm = pattern_address.sub('', oldTerm).strip()
-        # If the term is empty,
-        if not newTerm:
-            # Remove brackets
-            newTerm = pattern_bracket.sub('', oldTerm).strip()
-        # Append
-        newTerms.append(newTerm)
-    # Remove domain
-    string = pattern_domain.sub('', ', '.join(newTerms))
-    # Return
-    return string.replace('"', '').replace('.', ' ')
-
-
-def clean_filename(text):
-    pass
-def sanitizeFileName(fileName):
-    alphabet = "-_.() %s%s" % (string.ascii_letters, string.digits)
-    return ''.join(x if x in alphabet else '-' for x in fileName)
+    'Extract nickname from email address'
+    nickname, address = parseaddr(text)
+    if not nickname:
+        nickname = address
+    return pattern_whitespace.sub(' ', pattern_domain.sub('', nickname).replace('.', ' ').replace('_', ' ')).strip('" ').title()
 
 
 def clean_tag(text):
@@ -379,42 +298,78 @@ def clean_tag(text):
     return pattern_whitespace.sub(' ', text.lower().strip('" ')).decode('utf8')
 
 
-def buildMessage(headerByValue, when, bodyText='', bodyHtml='', attachmentPaths=None):
-# Build
-message = email.MIMEMultipart.MIMEMultipart()
-for key, value in headerByValue.iteritems():
-message[key] = value
-message['Date'] = email.utils.formatdate(time.mktime(when.timetuple()), localtime=True)
-
-# Set body
-mimeText = email.MIMEText.MIMEText(bodyText)
-mimeBody = email.MIMEText.MIMEText(bodyHtml, 'html')
-if bodyText and bodyHtml:
-messageAlternative = email.MIMEMultipart.MIMEMultipart('alternative')
-messageAlternative.attach(mimeText)
-messageAlternative.attach(mimeBody)
-message.attach(messageAlternative)
-elif bodyText:
-message.attach(mimeText)
-elif bodyHtml:
-message.attach(mimeBody)
-
-# Set attachments
-if attachmentPaths:
-for attachmentPath in attachmentPaths:
-attachmentName = os.path.basename(attachmentPath)
-mimeType = mimetypes.guess_type(attachmentName)[0]
-if not mimeType:
-mimeType = 'application/octet-stream'
-part = email.MIMEBase.MIMEBase(*mimeType.split('/'))
-part.set_payload(open(attachmentPath, 'rb').read())
-email.Encoders.encode_base64(part)
-part.add_header('Content-Disposition', 'attachment; filename="%s"' % attachmentName)
-message.attach(part)
-# Return
-return message
-
-
 def format_tags(tags, separator=' '):
     'Format tags'
     return separator.join(x.encode('utf8') for x in tags)
+
+
+def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', bccWhom='', bodyText='', bodyHTML='', attachmentPaths=None):
+    'Build MIME message'
+    mimeText = email.MIMEText.MIMEText(bodyText.encode('utf8'), _charset='utf8')
+    mimeHTML = email.MIMEText.MIMEText(bodyHTML.encode('utf8'), 'html')
+    if attachmentPaths:
+        message = email.MIMEMultipart.MIMEMultipart()
+        if bodyText and bodyHTML:
+            messageAlternative = email.MIMEMultipart.MIMEMultipart('alternative')
+            messageAlternative.attach(mimeText)
+            messageAlternative.attach(mimeHTML)
+            message.attach(messageAlternative)
+        elif bodyText:
+            message.attach(mimeText)
+        elif bodyHTML:
+            message.attach(mimeHTML)
+        for attachmentPath in attachmentPaths:
+            attachmentName = os.path.basename(attachmentPath)
+            contentType, contentEncoding = mimetypes.guess_type(attachmentName)
+            # If we could not guess the type or the file is compressed,
+            if contentType is None or contentEncoding is not None:
+                contentType = 'application/octet-stream'
+            mainType, subType = contentType.split('/', 1)
+            payload = open(attachmentPath, 'rb').read()
+            if mainType == 'text':
+                part = email.MIMEText.MIMEText(payload, _subtype=subType, _charset=chardet.detect(payload)['encoding'])
+            elif mainType == 'image':
+                part = email.MIMEImage.MIMEImage(payload, _subtype=subType)
+            elif mainType == 'audio':
+                part = email.MIMEAudio.MIMEAudio(payload, _subtype=subType)
+            else:
+                part = email.MIMEBase.MIMEBase(mainType, subType)
+                part.set_payload(payload)
+                email.Encoders.encode_base64(part)
+            message.add_header('Content-Disposition', 'attachment', filename=attachmentName)
+            message.attach(part)
+    elif bodyText and bodyHTML:
+        message = email.MIMEMultipart.MIMEMultipart('alternative')
+        message.attach(mimeText)
+        message.attach(mimeHTML)
+    elif bodyText:
+        message = mimeText
+    elif bodyHTML:
+        message = mimeHTML
+    message['Date'] = formatdate(timegm((whenUTC or datetime.datetime.utcnow()).timetuple()))
+    message['Subject'] = subject.encode('utf8')
+    message['From'] = fromWhom.encode('utf8')
+    message['To'] = toWhom.encode('utf8')
+    message['CC'] = ccWhom.encode('utf8')
+    message['BCC'] = bccWhom.encode('utf8')
+    return message
+
+
+def extract_parts(sourcePath, partIndices):
+    'Get attachment from email sourcePath'
+    if not hasattr(partIndices, '__iter__'):
+        partIndices = [partIndices]
+    message = email.message_from_file(gzip.open(sourcePath, 'rb') if sourcePath.endswith('.gz') else open(sourcePath, 'rb'))
+    partPacks = []
+    for partIndex, part in enumerate(message.walk()):
+        if 'multipart' == part.get_content_maintype():
+            continue
+        if partIndex not in partIndices:
+            continue
+        partPacks.append((partIndex, part.get_filename(), part.get_content_type(), part.get_content_charset(), part.get_payload(decode=True)))
+    return partPacks
+
+
+class IMAPError(Exception):
+    'IMAP error'
+    pass
