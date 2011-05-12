@@ -388,10 +388,10 @@ def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', b
         message = email.MIMEMultipart.MIMEMultipart('alternative')
         message.attach(mimeText)
         message.attach(mimeHTML)
-    elif bodyText:
-        message = mimeText
     elif bodyHTML:
         message = mimeHTML
+    else:
+        message = mimeText
     message['Date'] = formatdate(timegm((whenUTC or datetime.datetime.utcnow()).timetuple()))
     message['Subject'] = subject.encode('utf-8')
     message['From'] = fromWhom.encode('utf-8')
