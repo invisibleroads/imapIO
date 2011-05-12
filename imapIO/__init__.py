@@ -10,14 +10,13 @@ import datetime
 import mimetypes
 import logging; log = logging.getLogger(__name__)
 from calendar import timegm
-from datetime import datetime
 from email.generator import Generator
 from email.parser import HeaderParser
 from email.utils import mktime_tz, parsedate_tz, formatdate, parseaddr, formataddr, getaddresses
 from email.header import decode_header, HeaderParseError
 
 
-__all__ = ['IMAP4', 'IMAP4_SSL', 'IMAPError', 'Email', 'format_tags', 'build_message']
+__all__ = ['IMAP4', 'IMAP4_SSL', 'IMAPError', 'Email', 'clean_nickname', 'parse_tags', 'format_tags', 'build_message', 'extract_parts']
 
 
 pattern_folder = re.compile(r'\((?P<flags>.*?)\) "(?P<delimiter>.*)" (?:\{.*\})?(?P<name>.*)')
@@ -31,16 +30,6 @@ class _IMAPExtension(object):
 
     def __str__(self):
         return '%s@%s:%s' % (self.user, self.host, self.port)
-
-    @classmethod
-    def connect(cls, host, port, user, password):
-        'Connect, login, return class instance'
-        try:
-            server = cls(host, port)
-            server.login(user, password)
-        except Exception, error:
-            raise IMAPError(error)
-        return server
 
     def format_error(self, text, data=None):
         'Format error string'
@@ -70,13 +59,18 @@ class _IMAPExtension(object):
             return 0
         return int(data[0])
 
-    def walk(self, includes=None, excludes=None):
+    def walk(self, includes=None, excludes=None, criterion=u''):
         """
-        Generate messages from matching folders.
+        Generate messages from folders matching includes/excludes and messages matching criterion.
         Without arguments, it will walk all folders.
         With includes, it will walk only folders with matching names or matching parent names.
         With excludes, it will skip folders with matching names or matching parent names.
+        Please see IMAP specification for more details on search criterion.
         """
+        if includes and not hasattr(includes, '__iter__'):
+            includes = [includes]
+        if excludes and not hasattr(excludes, '__iter__'):
+            excludes = [excludes]
         includes = {clean_tag(x) for x in includes} if includes else set()
         excludes = {clean_tag(x) for x in excludes} if excludes else set()
         # Cycle folders in random order
@@ -84,7 +78,7 @@ class _IMAPExtension(object):
         random.shuffle(folders)
         for folder in folders:
             # Extract tags
-            tags = [clean_tag(x) for x in folder.replace('&-', '&').split('\\')]
+            tags = parse_tags(folder)
             # If there are tags to exclude, skip the folder
             if excludes.intersection(tags):
                 continue
@@ -93,7 +87,19 @@ class _IMAPExtension(object):
                 continue
             # Cycle messages in random order
             messageCount = self.cd(folder)
-            messageIndices = range(1, messageCount + 1)
+            if criterion:
+                criterion = '(%s)' % criterion.encode('utf-8')
+                try:
+                    r, data = self.search('utf-8', criterion)
+                except self.error, error:
+                    log.warn(format_error("Could not search mailbox with criterion='%s'" % criterion, error))
+                    continue
+                if r != 'OK':
+                    log.warn(format_error("Could not search mailbox with criterion='%s'" % criterion, data))
+                    continue
+                messageIndices = map(int, data[0].split())
+            else:
+                messageIndices = range(1, messageCount + 1)
             random.shuffle(messageIndices)
             for messageIndex in messageIndices:
                 # Prepare error template
@@ -143,27 +149,62 @@ class _IMAPExtension(object):
 class IMAP4(_IMAPExtension, imaplib.IMAP4):
     'Extended IMAP4 client class'
 
-    def __init__(self, host='', port=143):
+    def __init__(self, host='', port=imaplib.IMAP4_PORT):
         self.host = host
         self.port = port
         imaplib.IMAP4.__init__(self, host, port)
+        _IMAPExtension.__init__(self)
 
     def login(self, user, password):
         self.user = user
         imaplib.IMAP4.login(self, user, password)
 
+    @classmethod
+    def connect(cls, host='', port=imaplib.IMAP4_PORT, user='', password=''):
+        'Connect, login, return class instance'
+        try:
+            server = cls(host, port)
+            server.login(user, password)
+        except Exception, error:
+            server = _IMAPExtension()
+            server.host = host
+            server.port = port
+            server.user = user
+            raise IMAPError(server.format_error('Could not connect to server', error))
+        return server
+
 
 class IMAP4_SSL(_IMAPExtension, imaplib.IMAP4_SSL):
     'Extended IMAP4 client class over SSL connection'
 
-    def __init__(self, host='', port=993, keyfile=None, certfile=None):
+    def __init__(self, host='', port=imaplib.IMAP4_SSL_PORT, keyfile=None, certfile=None):
         self.host = host
         self.port = port
         imaplib.IMAP4_SSL.__init__(self, host, port, keyfile, certfile)
+        _IMAPExtension.__init__(self)
 
     def login(self, user, password):
         self.user = user
         imaplib.IMAP4_SSL.login(self, user, password)
+
+    @classmethod
+    def connect(cls, host='', port=imaplib.IMAP4_SSL_PORT, user='', password='', keyfile=None, certfile=None):
+        'Connect, login, return class instance'
+        try:
+            server = cls(host, port, keyfile, certfile)
+            server.login(user, password)
+        except Exception, error:
+            server = _IMAPExtension()
+            server.host = host
+            server.port = port
+            server.user = user
+            raise IMAPError(server.format_error('Could not connect to server', error))
+        return server
+
+
+class IMAPError(Exception):
+    'IMAP error'
+    pass
 
 
 class Email(object):
@@ -176,18 +217,31 @@ class Email(object):
         # Parse header
         valueByKey = HeaderParser().parsestr(header)
         def getWhom(field):
-            return ', '.join(formataddr((decode(x), y)) for x, y in getaddresses(valueByKey.get_all(field, [])))
+            return ', '.join(formataddr((self._decode(x), y)) for x, y in getaddresses(valueByKey.get_all(field, [])))
         # Extract fields
         if 'Date' in valueByKey:
             timePack = parsedate_tz(valueByKey['Date'])
-            self.whenUTC = datetime.fromtimestamp(timegm(timePack) if timePack[-1] is None else mktime_tz(timePack)) if timePack else None
+            self.whenUTC = datetime.datetime.utcfromtimestamp(timegm(timePack) if timePack[-1] is None else mktime_tz(timePack)) if timePack else None
         else:
             self.whenUTC = None
-        self.subject = decode(valueByKey.get('Subject', ''))
+        self.subject = self._decode(valueByKey.get('Subject', ''))
         self.fromWhom = getWhom('From')
         self.toWhom = getWhom('To')
         self.ccWhom = getWhom('CC')
         self.bccWhom = getWhom('BCC')
+
+    def _decode(self, text):
+        'Decode text into utf-8'
+        try:
+            packs = decode_header(text)
+        except HeaderParseError:
+            try:
+                packs = decode_header(text.replace('?==?', '?= =?'))
+            except HeaderParseError:
+                log.warn(self.format_error('Could not decode header', text))
+                packs = [(text, 'utf-8')]
+        string = ''.join(part.decode(encoding or 'utf-8', errors='ignore') for part, encoding in packs)
+        return pattern_whitespace.sub(' ', string.strip())
 
     def format_error(self, text, data=None):
         'Format error string'
@@ -205,6 +259,8 @@ class Email(object):
     @flags.setter
     def flags(self, flags):
         'Set flags'
+        if not hasattr(flags, '__iter__'):
+            flags = [flags]
         r, data = self.server.uid('store', self.uid, 'FLAGS', '(%s)' % ' '.join(flags))
         if r != 'OK':
             raise IMAPError(self.format_error('Could not set flags', data))
@@ -237,25 +293,27 @@ class Email(object):
         'Flag the email as deleted or not'
         return self.set_flag(r'\Deleted', on)
 
-    def save(self, targetPath):
+    def save(self, targetPath=None):
         """
         Save email to the hard drive and return a list of parts by index, type, name.
         Compress the file if the filename ends with .gz
+        Return partPacks if targetPath=None.
         """
         try:
-            # Get flags
+            # Get
             flags = self.flags
             # Load message
             r, data = self.server.uid('fetch', self.uid, '(RFC822)')
             if r != 'OK':
                 raise IMAPError(self.format_error('Could not fetch message body', data))
             message = email.message_from_string(data[0][1])
-            # Restore flags
+            # Restore
             self.flags = flags
         except imaplib.IMAP4.abort, error:
             raise IMAPError(self.format_error('Connection failed while fetching message body', error))
         # Save
-        Generator((gzip.open if targetPath.endswith('.gz') else open)(targetPath, 'wb')).flatten(message)
+        if targetPath:
+            Generator((gzip.open if targetPath.endswith('.gz') else open)(targetPath, 'wb')).flatten(message)
         # Gather partPacks
         partPacks = []
         for partIndex, part in enumerate(message.walk()):
@@ -271,20 +329,6 @@ class Email(object):
         return setattr(self, key, value)
 
 
-def decode(text):
-    'Decode text into utf8'
-    try:
-        packs = decode_header(text)
-    except HeaderParseError:
-        try:
-            packs = decode_header(text.replace('?==?', '?= =?'))
-        except HeaderParseError:
-            log.warn(self.format_error('Could not decode header', text))
-            packs = [(text, 'utf8')]
-    string = ''.join(part.decode(encoding or 'utf8', errors='ignore') for part, encoding in packs)
-    return pattern_whitespace.sub(' ', string.strip())
-
-
 def clean_nickname(text):
     'Extract nickname from email address'
     nickname, address = parseaddr(text)
@@ -293,20 +337,24 @@ def clean_nickname(text):
     return pattern_whitespace.sub(' ', pattern_domain.sub('', nickname).replace('.', ' ').replace('_', ' ')).strip('" ').title()
 
 
-def clean_tag(text):
-    'Convert to lowercase unicode, strip quotation marks, compact whitespace'
-    return pattern_whitespace.sub(' ', text.lower().strip('" ')).decode('utf8')
+def parse_tags(text):
+    return [clean_tag(x) for x in text.replace('&-', '&').split('\\')]
 
 
 def format_tags(tags, separator=' '):
     'Format tags'
-    return separator.join(x.encode('utf8') for x in tags)
+    return separator.join(x.encode('utf-8') for x in tags)
+
+
+def clean_tag(text):
+    'Convert to lowercase unicode, strip quotation marks, compact whitespace'
+    return pattern_whitespace.sub(' ', text.lower().strip('" ')).decode('utf-8')
 
 
 def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', bccWhom='', bodyText='', bodyHTML='', attachmentPaths=None):
     'Build MIME message'
-    mimeText = email.MIMEText.MIMEText(bodyText.encode('utf8'), _charset='utf8')
-    mimeHTML = email.MIMEText.MIMEText(bodyHTML.encode('utf8'), 'html')
+    mimeText = email.MIMEText.MIMEText(bodyText.encode('utf-8'), _charset='utf-8')
+    mimeHTML = email.MIMEText.MIMEText(bodyHTML.encode('utf-8'), 'html')
     if attachmentPaths:
         message = email.MIMEMultipart.MIMEMultipart()
         if bodyText and bodyHTML:
@@ -336,7 +384,7 @@ def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', b
                 part = email.MIMEBase.MIMEBase(mainType, subType)
                 part.set_payload(payload)
                 email.Encoders.encode_base64(part)
-            message.add_header('Content-Disposition', 'attachment', filename=attachmentName)
+            part.add_header('Content-Disposition', 'attachment', filename=attachmentName)
             message.attach(part)
     elif bodyText and bodyHTML:
         message = email.MIMEMultipart.MIMEMultipart('alternative')
@@ -347,29 +395,36 @@ def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', b
     elif bodyHTML:
         message = mimeHTML
     message['Date'] = formatdate(timegm((whenUTC or datetime.datetime.utcnow()).timetuple()))
-    message['Subject'] = subject.encode('utf8')
-    message['From'] = fromWhom.encode('utf8')
-    message['To'] = toWhom.encode('utf8')
-    message['CC'] = ccWhom.encode('utf8')
-    message['BCC'] = bccWhom.encode('utf8')
+    message['Subject'] = subject.encode('utf-8')
+    message['From'] = fromWhom.encode('utf-8')
+    message['To'] = toWhom.encode('utf-8')
+    message['CC'] = ccWhom.encode('utf-8')
+    message['BCC'] = bccWhom.encode('utf-8')
     return message
 
 
-def extract_parts(sourcePath, partIndices):
-    'Get attachment from email sourcePath'
+def extract_parts(sourcePath, partIndices=None, peek=False, applyCharset=True):
+    """
+    Get attachment from email sourcePath.
+    Set partIndices=None to see all parts.
+    Set peek=True to omit the payload.
+    Set applyCharset=True to decode the payload into unicode.
+    """
     if not hasattr(partIndices, '__iter__'):
-        partIndices = [partIndices]
+        partIndices = [partIndices] if partIndices else []
     message = email.message_from_file(gzip.open(sourcePath, 'rb') if sourcePath.endswith('.gz') else open(sourcePath, 'rb'))
     partPacks = []
     for partIndex, part in enumerate(message.walk()):
         if 'multipart' == part.get_content_maintype():
             continue
-        if partIndex not in partIndices:
+        if partIndices and partIndex not in partIndices:
             continue
-        partPacks.append((partIndex, part.get_filename(), part.get_content_type(), part.get_content_charset(), part.get_payload(decode=True)))
+        partPack = partIndex, part.get_filename(), part.get_content_type()
+        if not peek:
+            payload = part.get_payload(decode=True)
+            if applyCharset:
+                charset = part.get_content_charset() or part.get_charset() or chardet.detect(payload)['encoding']
+                payload = payload.decode(charset, errors='ignore')
+            partPack += (payload,)
+        partPacks.append(partPack)
     return partPacks
-
-
-class IMAPError(Exception):
-    'IMAP error'
-    pass

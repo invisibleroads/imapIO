@@ -26,6 +26,6 @@ setup(
     url='https://github.com/invisibleroads/imapIO',
     packages=find_packages(),
     include_package_data=True,
-    # test_suite='imapIO.tests',
-    # tests_require=['nose'],
+    test_suite='imapIO.tests',
+    tests_require=['nose'],
     zip_safe=True)
