@@ -18,12 +18,12 @@ Usage
     import imapIO
     server = imapIO.connect(host, port, user, password)
 
-    # Select IMAP folder
+    # Select folder
     import random
     messageCount = server.cd(random.choice(server.folders))
 
-    # For each email in the inbox,
-    for email in server.walk(includes='inbox'):
+    # Walk messages in inbox sorted by arrival time
+    for email in server.walk(includes='inbox', sortCriterion='ARRIVAL'):
         # Show information
         print
         print 'Date: %s' % email.whenUTC
@@ -33,17 +33,13 @@ Usage
         print 'To: %s' % email.toWhom.encode('utf-8')
         print 'CC: %s' % email.ccWhom.encode('utf-8')
         print 'BCC: %s' % email.bccWhom.encode('utf-8')
-        # Set seen flag
+        # Set flags
         email.seen = False
-
-    # For each email excluding the trash and drafts folders,
-    for email in server.walk(excludes=['trash', 'drafts']):
-        # Set deleted flag
         email.deleted = False
 
-    # For each email satisfying the search criterion,
+    # Walk messages satisfying search criterion
     emailCriterion = 'BEFORE 23-JAN-2005'
-    emailGenerator = server.walk(excludes=['public', 'trash', 'drafts'], criterion=emailCriterion)
+    emailGenerator = server.walk(excludes=['public', 'trash'], searchCriterion=emailCriterion)
     for emailIndex, email in enumerate(emailGenerator):
         # Show flags
         print
@@ -70,6 +66,6 @@ Usage
             'CHANGES.rst',
             'README.rst',
         ]))
-    email = server.walk('inbox', criterion='FROM from@example.com TO to@example.com').next()
+    email = server.walk('inbox', searchCriterion='FROM from@example.com TO to@example.com').next()
     email.deleted = True
     server.expunge()
