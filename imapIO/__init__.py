@@ -160,10 +160,10 @@ class IMAP4(_IMAPExtension, imaplib.IMAP4):
         imaplib.IMAP4.login(self, user, password)
 
     @classmethod
-    def connect(cls, host='', port=imaplib.IMAP4_PORT, user='', password=''):
+    def connect(cls, host='', port=None, user='', password=''):
         'Connect, login, return class instance'
         try:
-            server = cls(host, port)
+            server = cls(host, port or imaplib.IMAP4_PORT)
             server.login(user, password)
         except Exception, error:
             server = _IMAPExtension()
@@ -188,10 +188,10 @@ class IMAP4_SSL(_IMAPExtension, imaplib.IMAP4_SSL):
         imaplib.IMAP4_SSL.login(self, user, password)
 
     @classmethod
-    def connect(cls, host='', port=imaplib.IMAP4_SSL_PORT, user='', password='', keyfile=None, certfile=None):
+    def connect(cls, host='', port=None, user='', password='', keyfile=None, certfile=None):
         'Connect, login, return class instance'
         try:
-            server = cls(host, port, keyfile, certfile)
+            server = cls(host, port or imaplib.IMAP4_SSL_PORT, keyfile, certfile)
             server.login(user, password)
         except Exception, error:
             server = _IMAPExtension()
@@ -338,6 +338,7 @@ def clean_nickname(text):
 
 
 def parse_tags(text):
+    'Parse tags from folder name'
     return [clean_tag(x) for x in text.replace('&-', '&').split('\\')]
 
 
@@ -419,12 +420,17 @@ def extract_parts(sourcePath, partIndices=None, peek=False, applyCharset=True):
             continue
         if partIndices and partIndex not in partIndices:
             continue
-        partPack = partIndex, part.get_filename(), part.get_content_type()
+        partPack = partIndex, part.get_filename() or '', part.get_content_type() or ''
         if not peek:
-            payload = part.get_payload(decode=True)
+            payload = part.get_payload(decode=True) or ''
             if applyCharset:
                 charset = part.get_content_charset() or part.get_charset() or chardet.detect(payload)['encoding']
                 payload = payload.decode(charset, errors='ignore')
             partPack += (payload,)
         partPacks.append(partPack)
     return partPacks
+
+
+def connect(host='', port=None, user='', password='', keyfile=None, certfile=None):
+    'Connect to an IMAP server over an SSL connection'
+    return IMAP4_SSL.connect(host, port, user, password, keyfile, certfile)

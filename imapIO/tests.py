@@ -145,7 +145,7 @@ class TestIMAP4_SSL(unittest.TestCase, Base):
 
     def setUp(self):
         if not hasattr(self, 'server'):
-            self.server = imapIO.IMAP4_SSL.connect(host, port, user, password)
+            self.server = imapIO.connect(host, port, user, password)
 
 
 def test_clean_nickname():
