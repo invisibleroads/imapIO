@@ -24,6 +24,7 @@ setup(
     author='Roy Hyunjin Han',
     author_email='service@invisibleroads.com',
     url='https://github.com/invisibleroads/imapIO',
+    install_requires=['chardet'],
     packages=find_packages(),
     include_package_data=True,
     test_suite='imapIO.tests',
