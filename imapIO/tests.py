@@ -56,8 +56,11 @@ class Base(object):
         tags = set(imapIO.parse_tags(folder))
         for email in self.server.walk(excludes=set(folders).difference(folder)):
             self.assertNotEqual(tags.intersection(email.tags), tags)
-        # Test criterion
-        self.server.walk(criterion=u'SINCE 01-JAN-2006 BEFORE 01-JAN-2007')
+        # Test searchCriterion
+        self.server.walk(searchCriterion=u'SINCE 01-JAN-2006 BEFORE 01-JAN-2007').next()
+        # Test sortCriterion
+        if 'SORT' in self.server.capabilities:
+            self.server.walk(sortCriterion='ARRIVAL').next()
 
     def test_revive(self):
         folder = 'inbox'
@@ -81,7 +84,7 @@ class Base(object):
             'FROM %s' % baseCase['fromWhom'],
             'TO %s' % baseCase['toWhom'],
         ]
-        for email in self.server.walk(includes=[folder], criterion=' '.join(criteria)):
+        for email in self.server.walk(includes=folder, searchCriterion=' '.join(criteria)):
             email.deleted = True
         self.server.expunge()
         # Run cases
@@ -98,7 +101,7 @@ class Base(object):
             subject = case['subject'] + str(caseIndex)
             # Revive
             self.server.revive(folder, imapIO.build_message(**case.replace(subject=subject)))
-            email = self.server.walk(includes=[folder], criterion=' '.join(['SUBJECT %s' % subject] + criteria)).next()
+            email = self.server.walk(includes=folder, searchCriterion=' '.join(['SUBJECT %s' % subject] + criteria)).next()
             self.assertEqual(email.seen, False)
             self.assertEqual(email.whenUTC, case['whenUTC'])
             email.flags = r'\Seen'
@@ -125,9 +128,9 @@ class Base(object):
                 else:
                     raise Exception('Unexpect part: %s' % (partIndex, partName, contentType))
         # Clear cases
-        self.server.format_error('xxx')
-        for email in self.server.walk(includes=[folder], criterion=' '.join(criteria)):
-            email.format_error('xxx')
+        self.server.format_error('xxx', '')
+        for email in self.server.walk(includes=folder, searchCriterion=' '.join(criteria)):
+            email.format_error('xxx', '')
             email.deleted = True
         self.server.expunge()
 

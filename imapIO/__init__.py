@@ -20,7 +20,6 @@ __all__ = ['IMAP4', 'IMAP4_SSL', 'IMAPError', 'Email', 'clean_nickname', 'parse_
 
 
 pattern_folder = re.compile(r'\((?P<flags>.*?)\) "(?P<delimiter>.*)" (?:\{.*\})?(?P<name>.*)')
-pattern_uid = re.compile(r'UID (\d+)')
 pattern_whitespace = re.compile(r'\s+')
 pattern_domain = re.compile(r'@[^,]+|/[^,]+')
 
@@ -31,9 +30,9 @@ class _IMAPExtension(object):
     def __str__(self):
         return '%s@%s:%s' % (self.user, self.host, self.port)
 
-    def format_error(self, text, data=None):
-        'Format error string'
-        return '[%s] %s%s' % (self, text, '\n' + repr(data) if data else '')
+    def format_error(self, text, data):
+        'Format an error that happened with a server'
+        return '[%s] %s%s' % (self, text, '\n' + repr(data))
 
     @property
     def folders(self):
@@ -55,78 +54,73 @@ class _IMAPExtension(object):
         'Select the specified folder and return message count'
         r, data = self.select() if folder is None else self.select(folder)
         if r != 'OK':
-            log.warn(self.format_error('[%s] Could not select folder' % folder, data))
+            log.warn(self.format_error('[%s] Could not select folder' % format_tags(parse_tags(folder)), data))
             return 0
         return int(data[0])
 
-    def walk(self, includes=None, excludes=None, criterion=u''):
+    def walk(self, includes=None, excludes=None, searchCriterion=u'ALL', sortCriterion=u''):
         """
-        Generate messages from folders matching includes/excludes and messages matching criterion.
+        Generate messages from folders matching includes/excludes and 
+        messages matching search criterion ordered by sort criterion.
+
         Without arguments, it will walk all folders.
         With includes, it will walk only folders with matching names or matching parent names.
         With excludes, it will skip folders with matching names or matching parent names.
-        Please see IMAP specification for more details on search criterion.
+        With sortCriterion, it will return messages as sorted within a folder.
+        Without sortCriterion, it will return messages in random order.
+
+        Please see IMAP specification for more details on search and sort criteria.
         """
+        # Prepare
+        if sortCriterion:
+            if 'SORT' not in self.capabilities:
+                raise IMAPError(self.format_error('SORT not supported by server', self.capabilities))
+            sortCriterion = '(%s)' % sortCriterion.encode('utf-8')
+        searchCriterion = '(%s)' % searchCriterion.encode('utf-8') if searchCriterion else '(ALL)'
         if includes and not hasattr(includes, '__iter__'):
             includes = [includes]
         if excludes and not hasattr(excludes, '__iter__'):
             excludes = [excludes]
         includes = {clean_tag(x) for x in includes} if includes else set()
         excludes = {clean_tag(x) for x in excludes} if excludes else set()
-        # Cycle folders in random order
+        # Walk folders in random order
         folders = self.folders
         random.shuffle(folders)
         for folder in folders:
-            # Extract tags
+            # Read tags
             tags = parse_tags(folder)
-            # If there are tags to exclude, skip the folder
             if excludes.intersection(tags):
                 continue
-            # If includes are defined and there are no tags to include, skip the folder
             if includes and not includes.intersection(tags):
                 continue
-            # Cycle messages in random order
-            messageCount = self.cd(folder)
-            if criterion:
-                criterion = '(%s)' % criterion.encode('utf-8')
-                try:
-                    r, data = self.search('utf-8', criterion)
-                except self.error, error:
-                    log.warn(format_error("Could not search mailbox with criterion='%s'" % criterion, error))
-                    continue
+            # Get messageUIDs
+            self.cd(folder)
+            try:
+                if sortCriterion:
+                    r, data = self.uid('sort', sortCriterion, 'utf-8', searchCriterion)
+                else:
+                    r, data = self.uid('search', 'charset', 'utf-8', searchCriterion)
                 if r != 'OK':
-                    log.warn(format_error("Could not search mailbox with criterion='%s'" % criterion, data))
-                    continue
-                messageIndices = map(int, data[0].split())
-            else:
-                messageIndices = range(1, messageCount + 1)
-            random.shuffle(messageIndices)
-            for messageIndex in messageIndices:
-                # Prepare error template
-                format_error = lambda text, data: self.format_error('[INDEX=%s %s] %s' % (messageIndex, format_tags(tags), text), data)
+                    raise self.error(data)
+            except self.error, error:
+                log.warn(self.format_error("[%s] Could not execute searchCriterion=%s, sortCriterion=%s" % (format_tags(tags), searchCriterion, sortCriterion), error))
+                continue
+            messageUIDs = map(int, data[0].split())
+            if not sortCriterion:
+                random.shuffle(messageUIDs)
+            # Walk messages
+            for messageUID in messageUIDs:
                 # Load message header
                 try:
-                    r, data = self.fetch(messageIndex, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC BCC DATE)] UID)')
-                # If the connection died, log it and quit
-                except imaplib.IMAP4.abort, error:
-                    raise IMAPError(format_error('Connection failed while fetching message header', error))
+                    r, data = self.uid('fetch', messageUID, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC BCC DATE)])')
+                    if r != 'OK':
+                        raise self.error(data)
                 # If we could not fetch the header, log it and move on
-                if r != 'OK':
-                    log.warn(format_error('Could not peek at message header', data))
-                    continue
-                # Extract uid
-                try:
-                    match = pattern_uid.search(data[1])
-                    if not match:
-                        match = pattern_uid.search(data[0][0])
-                        if not match:
-                            raise IndexError
-                # If we could not extract the uid, log it and move on
-                except IndexError:
-                    log.warn(format_error('Could not extract uid', data))
+                except self.error, error:
+                    log.warn(self.format_error('[%s UID=%s] Could not peek at message header' % (format_tags(tags), messageUID), error))
                     continue
                 # Yield
-                yield Email(self, int(match.group(1)), tags, data[0][1])
+                yield Email(self, messageUID, tags, data[0][1])
 
     def revive(self, targetFolder, message):
         'Upload the message to the targetFolder of the mail server'
@@ -230,6 +224,10 @@ class Email(object):
         self.ccWhom = getWhom('CC')
         self.bccWhom = getWhom('BCC')
 
+    def format_error(self, text, data):
+        'Format an error that happened with a message'
+        return self.server.format_error('[%s UID=%s] %s' % (format_tags(self.tags), self.uid, text), data)
+
     def _decode(self, text):
         'Decode text into utf-8'
         try:
@@ -245,7 +243,6 @@ class Email(object):
 
     def format_error(self, text, data=None):
         'Format error string'
-        return self.server.format_error('[UID=%s %s] %s' % (self.uid, format_tags(self.tags), text), data)
 
     @property
     def flags(self):
@@ -337,6 +334,11 @@ def clean_nickname(text):
     return pattern_whitespace.sub(' ', pattern_domain.sub('', nickname).replace('.', ' ').replace('_', ' ')).strip('" ').title()
 
 
+def clean_tag(text):
+    'Convert to lowercase unicode, strip quotation marks, compact whitespace'
+    return pattern_whitespace.sub(' ', text.lower().strip('" ')).decode('utf-8')
+
+
 def parse_tags(text):
     'Parse tags from folder name'
     return [clean_tag(x) for x in text.replace('&-', '&').split('\\')]
@@ -345,11 +347,6 @@ def parse_tags(text):
 def format_tags(tags, separator=' '):
     'Format tags'
     return separator.join(x.encode('utf-8') for x in tags)
-
-
-def clean_tag(text):
-    'Convert to lowercase unicode, strip quotation marks, compact whitespace'
-    return pattern_whitespace.sub(' ', text.lower().strip('" ')).decode('utf-8')
 
 
 def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', bccWhom='', bodyText='', bodyHTML='', attachmentPaths=None):
