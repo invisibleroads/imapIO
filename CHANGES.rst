@@ -1,6 +1,6 @@
 0.9.2
 -----
-- Reverted to set() for Python < 2.7 that lack set literal syntax
+- Reverted to set() for versions of Python < 2.7 that lack set literal syntax
 - Fixed tests for servers like Lotus Domino that do not update search indices
 
 
