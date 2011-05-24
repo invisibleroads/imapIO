@@ -57,7 +57,10 @@ class Base(object):
         for email in self.server.walk(excludes=set(folders).difference(folder)):
             self.assertNotEqual(tags.intersection(email.tags), tags)
         # Test searchCriterion
-        self.server.walk(searchCriterion=u'SINCE 01-JAN-2006 BEFORE 01-JAN-2007').next()
+        try:
+            self.server.walk(searchCriterion=u'SINCE 01-JAN-2006 BEFORE 01-JAN-2007').next()
+        except StopIteration:
+            pass
         # Test sortCriterion
         if 'SORT' in self.server.capabilities:
             self.server.walk(sortCriterion='ARRIVAL').next()
@@ -80,12 +83,9 @@ class Base(object):
                 'README.rst',
             ])
         # Clear previous cases
-        criteria = [
-            'FROM %s' % baseCase['fromWhom'],
-            'TO %s' % baseCase['toWhom'],
-        ]
-        for email in self.server.walk(includes=folder, searchCriterion=' '.join(criteria)):
-            email.deleted = True
+        for email in self.server.walk(includes=folder):
+            if [email.fromWhom, email.toWhom] == [baseCase['fromWhom'], baseCase['toWhom']]:
+                email.deleted = True
         self.server.expunge()
         # Run cases
         cases = [
@@ -101,7 +101,12 @@ class Base(object):
             subject = case['subject'] + str(caseIndex)
             # Revive
             self.server.revive(folder, imapIO.build_message(**case.replace(subject=subject)))
-            email = self.server.walk(includes=folder, searchCriterion=' '.join(['SUBJECT %s' % subject] + criteria)).next()
+            # Make sure the revived email exists
+            for email in self.server.walk(includes=folder):
+                if [email.fromWhom, email.toWhom, email.subject] == [baseCase['fromWhom'], baseCase['toWhom'], subject]:
+                    break
+            else:
+                raise AssertionError('Could not find revived message on server')
             self.assertEqual(email.seen, False)
             self.assertEqual(email.whenUTC, case['whenUTC'])
             email.flags = r'\Seen'
@@ -129,9 +134,10 @@ class Base(object):
                     raise Exception('Unexpect part: %s' % (partIndex, partName, contentType))
         # Clear cases
         self.server.format_error('xxx', '')
-        for email in self.server.walk(includes=folder, searchCriterion=' '.join(criteria)):
+        for email in self.server.walk(includes=folder):
             email.format_error('xxx', '')
-            email.deleted = True
+            if [email.fromWhom, email.toWhom] == [baseCase['fromWhom'], baseCase['toWhom']]:
+                email.deleted = True
         self.server.expunge()
 
 
