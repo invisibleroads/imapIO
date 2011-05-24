@@ -81,8 +81,8 @@ class _IMAPExtension(object):
             includes = [includes]
         if excludes and not hasattr(excludes, '__iter__'):
             excludes = [excludes]
-        includes = {clean_tag(x) for x in includes} if includes else set()
-        excludes = {clean_tag(x) for x in excludes} if excludes else set()
+        includes = set(clean_tag(x) for x in includes) if includes else set()
+        excludes = set(clean_tag(x) for x in excludes) if excludes else set()
         # Walk folders in random order
         folders = self.folders
         random.shuffle(folders)
