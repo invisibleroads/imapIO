@@ -238,7 +238,7 @@ class Email(object):
             except HeaderParseError:
                 log.warn(self.format_error('Could not decode header', text))
                 packs = [(text, 'utf-8')]
-        string = ''.join(part.decode(encoding or 'utf-8', errors='ignore') for part, encoding in packs)
+        string = ''.join(part.decode(encoding or 'utf-8', 'ignore') for part, encoding in packs)
         return pattern_whitespace.sub(' ', string.strip())
 
     def format_error(self, text, data=None):
@@ -422,7 +422,7 @@ def extract_parts(sourcePath, partIndices=None, peek=False, applyCharset=True):
             payload = part.get_payload(decode=True) or ''
             if applyCharset:
                 charset = part.get_content_charset() or part.get_charset() or chardet.detect(payload)['encoding']
-                payload = payload.decode(charset, errors='ignore')
+                payload = payload.decode(charset, 'ignore')
             partPack += (payload,)
         partPacks.append(partPack)
     return partPacks
