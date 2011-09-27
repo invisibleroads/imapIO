@@ -133,7 +133,7 @@ class _IMAPExtension(object):
         else:
             self.create(targetFolder)
             folder = targetFolder
-        # Append
+        # Note that the following will fail if message['Date'] is None
         r, data = self.append(folder, '', mktime_tz(parsedate_tz(message['Date'])), message.as_string(False))
         if r != 'OK':
             raise IMAPError(self.format_error('Could not revive message', data))
@@ -216,8 +216,10 @@ class Email(object):
         if 'Date' in valueByKey:
             timePack = parsedate_tz(valueByKey['Date'])
             self.whenUTC = datetime.datetime.utcfromtimestamp(timegm(timePack) if timePack[-1] is None else mktime_tz(timePack)) if timePack else None
+            self.Date = valueByKey['Date']
         else:
             self.whenUTC = None
+            self.Date = None
         self.subject = self._decode(valueByKey.get('Subject', ''))
         self.fromWhom = getWhom('From')
         self.toWhom = getWhom('To')
@@ -241,9 +243,6 @@ class Email(object):
         string = ''.join(part.decode(encoding or 'utf-8', 'ignore') for part, encoding in packs)
         return pattern_whitespace.sub(' ', string.strip())
 
-    def format_error(self, text, data=None):
-        'Format error string'
-
     @property
     def flags(self):
         'Get flags'
@@ -258,6 +257,13 @@ class Email(object):
         'Set flags'
         if not hasattr(flags, '__iter__'):
             flags = [flags]
+        else:
+            flags = list(flags)
+        try:
+            # Remove flags that we cannot set
+            flags.remove(r'\Recent')
+        except ValueError:
+            pass
         r, data = self.server.uid('store', self.uid, 'FLAGS', '(%s)' % ' '.join(flags))
         if r != 'OK':
             raise IMAPError(self.format_error('Could not set flags', data))
@@ -290,12 +296,8 @@ class Email(object):
         'Flag the email as deleted or not'
         return self.set_flag(r'\Deleted', on)
 
-    def save(self, targetPath=None):
-        """
-        Save email to the hard drive and return a list of parts by index, type, name.
-        Compress the file if the filename ends with .gz
-        Return partPacks if targetPath=None.
-        """
+    def as_string(self, unixfrom=False):
+        'Fetch mime string from server'
         try:
             # Get
             flags = self.flags
@@ -303,11 +305,23 @@ class Email(object):
             r, data = self.server.uid('fetch', self.uid, '(RFC822)')
             if r != 'OK':
                 raise IMAPError(self.format_error('Could not fetch message body', data))
-            message = email.message_from_string(data[0][1])
             # Restore
             self.flags = flags
         except imaplib.IMAP4.abort, error:
             raise IMAPError(self.format_error('Connection failed while fetching message body', error))
+        return data[0][1]
+
+    def as_message(self):
+        'Fetch mime string from server and convert to email.message.Message'
+        return email.message_from_string(self.as_string())
+
+    def save(self, targetPath=None):
+        """
+        Save email to the hard drive and return a list of parts by index, type, name.
+        Compress the file if the filename ends with .gz
+        Return partPacks if targetPath=None.
+        """
+        message = self.as_message()
         # Save
         if targetPath:
             Generator((gzip.open if targetPath.endswith('.gz') else open)(targetPath, 'wb')).flatten(message)

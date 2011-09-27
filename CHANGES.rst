@@ -1,3 +1,10 @@
+0.9.3
+-----
+- Modified Email so that an email from walk() can be sent directly to revive()
+- Modified flags.setter so that it does not try to set flag "\Recent"
+- Fixed tests to accommodate servers that set flag "\Recent"
+
+
 0.9.2
 -----
 - Reverted to set() for versions of Python < 2.7 that lack set literal syntax

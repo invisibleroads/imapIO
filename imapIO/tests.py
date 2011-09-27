@@ -63,7 +63,10 @@ class Base(object):
             pass
         # Test sortCriterion
         if 'SORT' in self.server.capabilities:
-            self.server.walk(sortCriterion='ARRIVAL').next()
+            try:
+                self.server.walk(sortCriterion='ARRIVAL').next()
+            except StopIteration:
+                pass
 
     def test_revive(self):
         folder = 'inbox'
@@ -110,7 +113,9 @@ class Base(object):
             self.assertEqual(email.seen, False)
             self.assertEqual(email.whenUTC, case['whenUTC'])
             email.flags = r'\Seen'
-            self.assertEqual(email.flags, (r'\Seen',))
+            self.assertEqual(
+                set([r'\Seen']), 
+                set(x for x in email.flags).difference([r'\Recent']))
             # Save
             targetPath = tempfile.mkstemp(suffix='.gz')[1]
             self.temporaryPaths.append(targetPath)
@@ -132,6 +137,11 @@ class Base(object):
                     self.assertEqual(payload, case['bodyHTML'])
                 else:
                     raise Exception('Unexpect part: %s' % (partIndex, partName, contentType))
+        # Duplicate an email directly
+        for email in self.server.walk(includes=folder):
+            if [email.fromWhom, email.toWhom] == [baseCase['fromWhom'], baseCase['toWhom']]:
+                self.server.revive(folder, email)
+                break
         # Clear cases
         self.server.format_error('xxx', '')
         for email in self.server.walk(includes=folder):

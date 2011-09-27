@@ -69,3 +69,8 @@ Usage
     email = server.walk('inbox', searchCriterion='FROM from@example.com TO to@example.com').next()
     email.deleted = True
     server.expunge()
+
+    # Duplicate a message from one server to another
+    server1 = imapIO.connect(host1, port1, user1, password1)
+    server2 = imapIO.connect(host2, port2, user2, password2)
+    server2.revive('inbox', server1.walk().next())
