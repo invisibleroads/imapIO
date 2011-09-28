@@ -2,7 +2,7 @@
 -----
 - Modified Email so that an email from walk() can be sent directly to revive()
 - Modified flags.setter so that it does not try to set flag "\Recent"
-- Fixed tests to accommodate servers that set flag "\Recent"
+- Fixed revive() to handle messages that lack a date
 
 
 0.9.2
@@ -14,7 +14,6 @@
 
 0.9.1
 -----
-
 - Changed walk() to use UID directly
 - Added support for sortCriterion using UID SORT
 - Improved test coverage to 80%
@@ -22,7 +21,6 @@
 
 0.9.0
 -----
-
 - Extracted code from imap-search-scout
 - Made API more user-friendly
 - Improved test coverage to 79%

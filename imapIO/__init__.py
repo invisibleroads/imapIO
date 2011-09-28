@@ -133,8 +133,9 @@ class _IMAPExtension(object):
         else:
             self.create(targetFolder)
             folder = targetFolder
-        # Note that the following will fail if message['Date'] is None
-        r, data = self.append(folder, '', mktime_tz(parsedate_tz(message['Date'])), message.as_string(False))
+        # A message without a date will return None instead of raising KeyError
+        messageDate = message['date']
+        r, data = self.append(folder, '', mktime_tz(parsedate_tz(messageDate)) if messageDate else None, message.as_string(False))
         if r != 'OK':
             raise IMAPError(self.format_error('Could not revive message', data))
         return data[0]
@@ -213,18 +214,14 @@ class Email(object):
         def getWhom(field):
             return ', '.join(formataddr((self._decode(x), y)) for x, y in getaddresses(valueByKey.get_all(field, [])))
         # Extract fields
-        if 'Date' in valueByKey:
-            timePack = parsedate_tz(valueByKey['Date'])
-            self.whenUTC = datetime.datetime.utcfromtimestamp(timegm(timePack) if timePack[-1] is None else mktime_tz(timePack)) if timePack else None
-            self.Date = valueByKey['Date']
-        else:
-            self.whenUTC = None
-            self.Date = None
-        self.subject = self._decode(valueByKey.get('Subject', ''))
-        self.fromWhom = getWhom('From')
-        self.toWhom = getWhom('To')
-        self.ccWhom = getWhom('CC')
-        self.bccWhom = getWhom('BCC')
+        self.date = valueByKey.get('date')
+        timePack = parsedate_tz(self.date)
+        self.whenUTC = datetime.datetime.utcfromtimestamp(timegm(timePack) if timePack[-1] is None else mktime_tz(timePack)) if timePack else None
+        self.subject = self._decode(valueByKey.get('subject', ''))
+        self.fromWhom = getWhom('from')
+        self.toWhom = getWhom('to')
+        self.ccWhom = getWhom('cc')
+        self.bccWhom = getWhom('bcc')
 
     def format_error(self, text, data):
         'Format an error that happened with a message'
@@ -406,12 +403,12 @@ def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', b
         message = mimeHTML
     else:
         message = mimeText
-    message['Date'] = formatdate(timegm((whenUTC or datetime.datetime.utcnow()).timetuple()))
-    message['Subject'] = subject.encode('utf-8')
-    message['From'] = fromWhom.encode('utf-8')
-    message['To'] = toWhom.encode('utf-8')
-    message['CC'] = ccWhom.encode('utf-8')
-    message['BCC'] = bccWhom.encode('utf-8')
+    message['date'] = formatdate(timegm((whenUTC or datetime.datetime.utcnow()).timetuple()))
+    message['subject'] = subject.encode('utf-8')
+    message['from'] = fromWhom.encode('utf-8')
+    message['to'] = toWhom.encode('utf-8')
+    message['cc'] = ccWhom.encode('utf-8')
+    message['bcc'] = bccWhom.encode('utf-8')
     return message
 
 
