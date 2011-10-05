@@ -103,7 +103,7 @@ class _IMAPExtension(object):
                 if r != 'OK':
                     raise self.error(data)
             except self.error, error:
-                log.warn(self.format_error("[%s] Could not execute searchCriterion=%s, sortCriterion=%s" % (format_tags(tags), searchCriterion, sortCriterion), error))
+                log.warn(self.format_error("[%s] Could not load messageUIDs" % format_tags(tags), error))
                 continue
             messageUIDs = map(int, data[0].split())
             if not sortCriterion:
@@ -139,6 +139,15 @@ class _IMAPExtension(object):
         if r != 'OK':
             raise IMAPError(self.format_error('Could not revive message', data))
         return data[0]
+
+    def has(self, message):
+        'Return True if the message exists on the server'
+        # self.walk(searchCriterion='')
+        # hmm not all imap servers support all search options
+        # date
+        # subject
+        # then verify header hash?
+        # or match exact date and time?
 
 
 class IMAP4(_IMAPExtension, imaplib.IMAP4):
@@ -210,6 +219,7 @@ class Email(object):
         self.uid = uid
         self.folder = folder
         self.tags = parse_tags(folder)
+        self.header = header
         # Parse header
         valueByKey = HeaderParser().parsestr(header)
         def getWhom(field):
@@ -217,7 +227,13 @@ class Email(object):
         # Extract fields
         self.date = valueByKey.get('date')
         timePack = parsedate_tz(self.date)
-        self.whenUTC = datetime.datetime.utcfromtimestamp(timegm(timePack) if timePack[-1] is None else mktime_tz(timePack)) if timePack else None
+        if not timePack:
+            self.whenUTC = None
+            self.whenLocal = None
+        else:
+            timeStamp = timegm(timePack) if timePack[-1] is None else mktime_tz(timePack)
+            self.whenUTC = datetime.datetime.utcfromtimestamp(timeStamp)
+            self.whenLocal = datetime.datetime.fromtimestamp(timeStamp)
         self.subject = self._decode(valueByKey.get('subject', ''))
         self.fromWhom = getWhom('from')
         self.toWhom = getWhom('to')
@@ -332,9 +348,15 @@ class Email(object):
         return partPacks
 
     def __getitem__(self, key):
+        keyLower = key.lower()
+        if keyLower in ['from', 'to', 'cc', 'bcc']:
+            return getattr(self, keyLower + 'Whom')
         return getattr(self, key)
 
     def __setitem__(self, key, value):
+        keyLower = key.lower()
+        if keyLower in ['from', 'to', 'cc', 'bcc']:
+            return setattr(self, keyLower + 'Whom', value)
         return setattr(self, key, value)
 
 
