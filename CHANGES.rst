@@ -1,8 +1,9 @@
 0.9.3
 -----
-- Modified Email so that an email from walk() can be sent directly to revive()
-- Modified flags.setter so that it does not try to set flag "\Recent"
 - Fixed revive() to handle messages that lack a date
+- Modified Email so that an email from walk() can be sent directly to revive()
+- Modified Email so that we can directly access its parent folder
+- Modified flags.setter so that it does not try to set flag "\Recent"
 
 
 0.9.2

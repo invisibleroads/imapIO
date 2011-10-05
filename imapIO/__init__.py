@@ -120,7 +120,7 @@ class _IMAPExtension(object):
                     log.warn(self.format_error('[%s UID=%s] Could not peek at message header' % (format_tags(tags), messageUID), error))
                     continue
                 # Yield
-                yield Email(self, messageUID, tags, data[0][1])
+                yield Email(self, messageUID, folder, data[0][1])
 
     def revive(self, targetFolder, message):
         'Upload the message to the targetFolder of the mail server'
@@ -205,10 +205,11 @@ class IMAPError(Exception):
 class Email(object):
     'Convenience class representing an email from an IMAP mailbox'
 
-    def __init__(self, server, uid, tags, header):
+    def __init__(self, server, uid, folder, header):
         self.server = server
         self.uid = uid
-        self.tags = tags
+        self.folder = folder
+        self.tags = parse_tags(folder)
         # Parse header
         valueByKey = HeaderParser().parsestr(header)
         def getWhom(field):
