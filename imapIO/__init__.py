@@ -385,6 +385,7 @@ def format_tags(tags, separator=' '):
 
 def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', bccWhom='', bodyText='', bodyHTML='', attachmentPaths=None):
     'Build MIME message'
+    subject, bodyText, bodyHTML = map(strip_illegal_characters, subject, bodyText, bodyHTML)
     mimeText = email.MIMEText.MIMEText(bodyText.encode('utf-8'), _charset='utf-8')
     mimeHTML = email.MIMEText.MIMEText(bodyHTML.encode('utf-8'), 'html')
     if attachmentPaths:
@@ -465,3 +466,7 @@ def extract_parts(sourcePath, partIndices=None, peek=False, applyCharset=True):
 def connect(host='', port=None, user='', password='', keyfile=None, certfile=None):
     'Connect to an IMAP server over an SSL connection'
     return IMAP4_SSL.connect(host, port, user, password, keyfile, certfile)
+
+
+def strip_illegal_characters(x):
+    return x.replace(chr(0), '')
