@@ -27,6 +27,10 @@ pattern_domain = re.compile(r'@[^,]+|/[^,]+')
 class _IMAPExtension(object):
     'Mixin class that extends the IMAP interface'
 
+    def __init__(self):
+        if 'imap.mail.yahoo.com' == self.host.lower():
+            self.xatom('ID ("GUID" "1")')
+
     def __str__(self):
         return '%s@%s:%s' % (self.user, self.host, self.port)
 
@@ -168,8 +172,6 @@ class IMAP4(_IMAPExtension, imaplib.IMAP4):
         'Connect, login, return class instance'
         try:
             server = cls(host, port or imaplib.IMAP4_PORT)
-            if 'imap.mail.yahoo.com' == host.lower():
-                server.xatom('ID ("GUID" "1")')
             server.login(user, password)
         except Exception, error:
             server = _IMAPExtension()
