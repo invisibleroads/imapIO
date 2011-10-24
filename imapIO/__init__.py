@@ -168,6 +168,8 @@ class IMAP4(_IMAPExtension, imaplib.IMAP4):
         'Connect, login, return class instance'
         try:
             server = cls(host, port or imaplib.IMAP4_PORT)
+            if 'imap.mail.yahoo.com' == host.lower():
+                server.xatom('ID ("GUID" "1")')
             server.login(user, password)
         except Exception, error:
             server = _IMAPExtension()
