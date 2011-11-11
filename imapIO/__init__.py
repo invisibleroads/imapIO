@@ -15,13 +15,15 @@ from email.parser import HeaderParser
 from email.utils import mktime_tz, parsedate_tz, formatdate, parseaddr, formataddr, getaddresses
 from email.header import decode_header, HeaderParseError
 
+from imapIO import utf_7_imap4
 
-__all__ = ['IMAP4', 'IMAP4_SSL', 'IMAPError', 'Email', 'clean_nickname', 'parse_tags', 'format_tags', 'build_message', 'extract_parts']
+
+__all__ = ['IMAP4', 'IMAP4_SSL', 'IMAPError', 'Email', 'build_message', 'normalize_nickname', 'connect', 'extract_parts']
 
 
-pattern_folder = re.compile(r'\((?P<flags>.*?)\) "(?P<delimiter>.*)" (?:\{.*\})?(?P<name>.*)')
-pattern_whitespace = re.compile(r'\s+')
-pattern_domain = re.compile(r'@[^,]+|/[^,]+')
+PATTERN_FOLDER = re.compile(r'\((?P<flags>.*?)\) "(?P<delimiter>.*)" (?:\{.*\})?(?P<name>.*)')
+PATTERN_WHITESPACE = re.compile(r'\s+')
+PATTERN_DOMAIN = re.compile(r'@[^,]+|/[^,]+')
 
 
 class _IMAPExtension(object):
@@ -47,53 +49,36 @@ class _IMAPExtension(object):
                 continue
             if isinstance(item, tuple):
                 item = ' '.join(item)
-            folders.append(pattern_folder.match(item).groups()[2].lstrip())
+            folders.append(PATTERN_FOLDER.match(item).groups()[2].lstrip())
         return folders
 
     def cd(self, folder=None):
         'Select the specified folder and return message count'
         r, data = self.select() if folder is None else self.select(folder)
         if r != 'OK':
-            log.warn(self.format_error('[%s] Could not select folder' % format_tags(parse_tags(folder)), data))
+            log.warn(self.format_error('[%s] Could not select folder' % folder, data))
             return 0
         return int(data[0])
 
-    def walk(self, includes=None, excludes=None, searchCriterion=u'ALL', sortCriterion=u''):
+    def walk(self, include=lambda folder: True, searchCriterion=u'ALL', sortCriterion=u'', shuffleMessages=True):
         """
-        Generate messages from folders matching includes/excludes and 
-        messages matching search criterion ordered by sort criterion.
-
-        Without arguments, it will walk all folders.
-        With includes, it will walk only folders with matching names or matching parent names.
-        With excludes, it will skip folders with matching names or matching parent names.
-        With sortCriterion, it will return messages as sorted within a folder.
-        Without sortCriterion, it will return messages in random order.
-
-        Please see IMAP specification for more details on search and sort criteria.
+        Yield matching messages from matching folders.
+        Without arguments, it will yield messages in random order.
+        Specify a folder, a list of folders or a function as the first argument.
+        See IMAP specification for details on search and sort criteria.
         """
-        # Prepare
+        include = make_folderFilter(include)
+        searchCriterion = '(%s)' % searchCriterion.encode('utf-8')
         if sortCriterion:
             if 'SORT' not in self.capabilities:
                 raise IMAPError(self.format_error('SORT not supported by server', self.capabilities))
             sortCriterion = '(%s)' % sortCriterion.encode('utf-8')
-        searchCriterion = '(%s)' % searchCriterion.encode('utf-8') if searchCriterion else '(ALL)'
-        if includes and not hasattr(includes, '__iter__'):
-            includes = [includes]
-        if excludes and not hasattr(excludes, '__iter__'):
-            excludes = [excludes]
-        includes = set(clean_tag(x) for x in includes) if includes else set()
-        excludes = set(clean_tag(x) for x in excludes) if excludes else set()
-        # Walk folders in random order
+        # Walk folders
         folders = self.folders
         random.shuffle(folders)
         for folder in folders:
-            # Read tags
-            tags = parse_tags(folder)
-            if excludes.intersection(tags):
+            if not include(folder):
                 continue
-            if includes and not includes.intersection(tags):
-                continue
-            # Get messageUIDs
             self.cd(folder)
             try:
                 if sortCriterion:
@@ -103,10 +88,10 @@ class _IMAPExtension(object):
                 if r != 'OK':
                     raise self.error(data)
             except self.error, error:
-                log.warn(self.format_error("[%s] Could not load messageUIDs" % format_tags(tags), error))
+                log.warn(self.format_error("[%s] Could not load messageUIDs" % folder, error))
                 continue
             messageUIDs = map(int, data[0].split())
-            if not sortCriterion:
+            if shuffleMessages and not sortCriterion:
                 random.shuffle(messageUIDs)
             # Walk messages
             for messageUID in messageUIDs:
@@ -117,9 +102,8 @@ class _IMAPExtension(object):
                         raise self.error(data)
                 # If we could not fetch the header, log it and move on
                 except self.error, error:
-                    log.warn(self.format_error('[%s UID=%s] Could not peek at message header' % (format_tags(tags), messageUID), error))
+                    log.warn(self.format_error('[%s UID=%s] Could not peek at message header' % (folder, messageUID), error))
                     continue
-                # Yield
                 yield Email(self, messageUID, folder, data[0][1])
 
     def revive(self, targetFolder, message):
@@ -127,27 +111,18 @@ class _IMAPExtension(object):
         # Find the folder on the mail server
         for folder in self.folders:
             # If the folder exists, exit loop
-            if folder.lower() == targetFolder.lower():
+            if normalize_folder(folder) == normalize_folder(targetFolder):
                 break
         # If the folder does not exist, create it
         else:
             self.create(targetFolder)
             folder = targetFolder
-        # A message without a date will return None instead of raising KeyError
+        # A message with no date returns None instead of raising KeyError
         messageDate = message['date']
         r, data = self.append(folder, '', mktime_tz(parsedate_tz(messageDate)) if messageDate else None, message.as_string(False))
         if r != 'OK':
             raise IMAPError(self.format_error('Could not revive message', data))
         return data[0]
-
-    def has(self, message):
-        'Return True if the message exists on the server'
-        # self.walk(searchCriterion='')
-        # hmm not all imap servers support all search options
-        # date
-        # subject
-        # then verify header hash?
-        # or match exact date and time?
 
 
 class IMAP4(_IMAPExtension, imaplib.IMAP4):
@@ -218,7 +193,6 @@ class Email(object):
         self.server = server
         self.uid = uid
         self.folder = folder
-        self.tags = parse_tags(folder)
         self.header = header
         # Parse header
         valueByKey = HeaderParser().parsestr(header)
@@ -242,7 +216,7 @@ class Email(object):
 
     def format_error(self, text, data):
         'Format an error that happened with a message'
-        return self.server.format_error('[%s UID=%s] %s' % (format_tags(self.tags), self.uid, text), data)
+        return self.server.format_error('[%s UID=%s] %s' % (self.folder, self.uid, text), data)
 
     def _decode(self, text):
         'Decode text into utf-8'
@@ -255,7 +229,7 @@ class Email(object):
                 log.warn(self.format_error('Could not decode header', text))
                 packs = [(text, 'utf-8')]
         string = ''.join(part.decode(encoding or 'utf-8', 'ignore') for part, encoding in packs)
-        return pattern_whitespace.sub(' ', string.strip())
+        return PATTERN_WHITESPACE.sub(' ', string.strip())
 
     @property
     def flags(self):
@@ -360,29 +334,6 @@ class Email(object):
         return setattr(self, key, value)
 
 
-def clean_nickname(text):
-    'Extract nickname from email address'
-    nickname, address = parseaddr(text)
-    if not nickname:
-        nickname = address
-    return pattern_whitespace.sub(' ', pattern_domain.sub('', nickname).replace('.', ' ').replace('_', ' ')).strip('" ').title()
-
-
-def clean_tag(text):
-    'Convert to lowercase unicode, strip quotation marks, compact whitespace'
-    return pattern_whitespace.sub(' ', text.lower().strip('" ')).decode('utf-8')
-
-
-def parse_tags(text):
-    'Parse tags from folder name'
-    return [clean_tag(x) for x in text.replace('&-', '&').split('\\')]
-
-
-def format_tags(tags, separator=' '):
-    'Format tags'
-    return separator.join(x.encode('utf-8') for x in tags)
-
-
 def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', bccWhom='', bodyText='', bodyHTML='', attachmentPaths=None):
     'Build MIME message'
     mimeText = email.MIMEText.MIMEText(bodyText.encode('utf-8'), _charset='utf-8')
@@ -435,6 +386,11 @@ def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', b
     return message
 
 
+def connect(host='', port=None, user='', password='', keyfile=None, certfile=None):
+    'Connect to an IMAP server over an SSL connection'
+    return IMAP4_SSL.connect(host, port, user, password, keyfile, certfile)
+
+
 def extract_parts(sourcePath, partIndices=None, peek=False, applyCharset=True):
     """
     Get attachment from email sourcePath.
@@ -462,6 +418,30 @@ def extract_parts(sourcePath, partIndices=None, peek=False, applyCharset=True):
     return partPacks
 
 
-def connect(host='', port=None, user='', password='', keyfile=None, certfile=None):
-    'Connect to an IMAP server over an SSL connection'
-    return IMAP4_SSL.connect(host, port, user, password, keyfile, certfile)
+def make_folderFilter(x):
+    # If x is unicode or a string,
+    if hasattr(x, 'lower'):
+        x = normalize_folder(x)
+        return lambda folder: normalize_folder(folder) == x
+    # If x is a tuple or a list or a dictionary,
+    if hasattr(x, '__iter__'):
+        x = [normalize_folder(y) for y in x]
+        return lambda folder: normalize_folder(folder) in x
+    # If x is a function,
+    if hasattr(x, 'func_code'):
+        return lambda folder: x(normalize_folder(folder))
+
+
+def normalize_folder(text):
+    text = text.decode('utf-7-imap4')
+    text = text.strip('" ')
+    text = text.lower()
+    return PATTERN_WHITESPACE.sub(' ', text)
+
+
+def normalize_nickname(text):
+    'Extract nickname from email address'
+    nickname, address = parseaddr(text)
+    if not nickname:
+        nickname = address
+    return PATTERN_WHITESPACE.sub(' ', PATTERN_DOMAIN.sub('', nickname).replace('.', ' ').replace('_', ' ')).strip('" ').title()

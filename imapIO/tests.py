@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 'Tests for imapIO'
 import os
 import random
@@ -8,24 +9,18 @@ import ConfigParser
 import logging; logging.basicConfig()
 
 import imapIO
+from imapIO.utf_7_imap4 import CODEC_NAME
 
 
 configuration = ConfigParser.ConfigParser()
 if not configuration.read('.test.ini'):
     raise Exception('Please create a configuration file called .test.ini')
 getX = lambda x: configuration.get('imap', x)
-imap4 = getX('imap4').lower() == 'true'
-imap4_ssl = getX('imap4_ssl').lower() == 'true'
 host = getX('host')
 port = int(getX('port'))
 user = getX('user')
 password = getX('password')
-
-
-class ReplaceableDict(dict):
-    
-    def replace(self, **kwargs):
-        return ReplaceableDict(self.items() + kwargs.items())
+ssl = getX('ssl').lower() == 'true'
 
 
 class Base(object):
@@ -44,18 +39,15 @@ class Base(object):
         self.server.cd()
 
     def test_walk(self):
-        # Get folders
-        folders = self.server.folders
-        # Test includes
-        folder = random.choice(folders)
-        tags = set(imapIO.parse_tags(folder))
-        for email in self.server.walk(folder):
-            self.assertEqual(tags.difference(email.tags), set())
-        # Test excludes
-        folder = random.choice(folders)
-        tags = set(imapIO.parse_tags(folder))
-        for email in self.server.walk(excludes=set(folders).difference(folder)):
-            self.assertNotEqual(tags.intersection(email.tags), tags)
+        # Test include
+        folder = random.choice(self.server.folders)
+        for include in folder, [folder], lambda x: x.lower() == folder.lower():
+            try:
+                email = self.server.walk(include).next()
+            except StopIteration:
+                pass
+            else:
+                self.assertEqual(True, imapIO.make_folderFilter(include)(email.folder))
         # Test searchCriterion
         try:
             self.server.walk(searchCriterion=u'SINCE 01-JAN-2006 BEFORE 01-JAN-2007').next()
@@ -71,7 +63,7 @@ class Base(object):
     def test_revive(self):
         folder = 'inbox'
         self.server.cd(folder)
-        baseCase = ReplaceableDict(
+        baseCase = dict(
             whenUTC=datetime.datetime(2005, 1, 23, 1, 0),
             subject='Test',
             fromWhom='from@example.com',
@@ -82,30 +74,29 @@ class Base(object):
             bodyHTML='<html>No</html>',
             attachmentPaths=[
                 'CHANGES.rst',
-                'MANIFEST.in',
                 'README.rst',
             ])
         # Clear previous cases
-        for email in self.server.walk(includes=folder):
+        for email in self.server.walk(folder):
             if [email.fromWhom, email.toWhom] == [baseCase['fromWhom'], baseCase['toWhom']]:
                 email.deleted = True
         self.server.expunge()
         # Run cases
         cases = [
             baseCase,
-            baseCase.replace(bodyHTML=''),
-            baseCase.replace(bodyText=''),
-            baseCase.replace(attachmentPaths=None),
-            baseCase.replace(attachmentPaths=None, bodyHTML=''),
-            baseCase.replace(attachmentPaths=None, bodyText=''),
+            dict(baseCase, bodyHTML=''),
+            dict(baseCase, bodyText=''),
+            dict(baseCase, attachmentPaths=None),
+            dict(baseCase, attachmentPaths=None, bodyHTML=''),
+            dict(baseCase, attachmentPaths=None, bodyText=''),
         ]
         self.temporaryPaths = []
         for caseIndex, case in enumerate(cases):
             subject = case['subject'] + str(caseIndex)
             # Revive
-            self.server.revive(folder, imapIO.build_message(**case.replace(subject=subject)))
+            self.server.revive(folder, imapIO.build_message(**dict(case, subject=subject)))
             # Make sure the revived email exists
-            for email in self.server.walk(includes=folder):
+            for email in self.server.walk(folder):
                 if [email.fromWhom, email.toWhom, email.subject] == [baseCase['fromWhom'], baseCase['toWhom'], subject]:
                     break
             else:
@@ -138,20 +129,20 @@ class Base(object):
                 else:
                     raise Exception('Unexpect part: %s' % (partIndex, partName, contentType))
         # Duplicate an email directly
-        for email in self.server.walk(includes=folder):
+        for email in self.server.walk(folder):
             if [email.fromWhom, email.toWhom] == [baseCase['fromWhom'], baseCase['toWhom']]:
                 self.server.revive(folder, email)
                 break
         # Clear cases
         self.server.format_error('xxx', '')
-        for email in self.server.walk(includes=folder):
+        for email in self.server.walk(folder):
             email.format_error('xxx', '')
             if [email.fromWhom, email.toWhom] == [baseCase['fromWhom'], baseCase['toWhom']]:
                 email.deleted = True
         self.server.expunge()
 
 
-@unittest.skipIf(not imap4, 'not configured')
+@unittest.skipIf(ssl, 'not configured')
 class TestIMAP4(unittest.TestCase, Base):
 
     def setUp(self):
@@ -159,7 +150,7 @@ class TestIMAP4(unittest.TestCase, Base):
             self.server = imapIO.IMAP4.connect(host, port, user, password)
 
 
-@unittest.skipIf(not imap4_ssl, 'not configured')
+@unittest.skipIf(not ssl, 'not configured')
 class TestIMAP4_SSL(unittest.TestCase, Base):
 
     def setUp(self):
@@ -167,6 +158,52 @@ class TestIMAP4_SSL(unittest.TestCase, Base):
             self.server = imapIO.connect(host, port, user, password)
 
 
-def test_clean_nickname():
-    assert imapIO.clean_nickname('person.one@example.com') == 'Person One'
-    assert imapIO.clean_nickname('Mr. Person <person.one@example.com>') == 'Mr Person'
+class TestExceptions(unittest.TestCase):
+
+    def setUp(self):
+        self.serverDummy = IMAP4Dummy()
+
+    def test_folders(self):
+        with self.assertRaises(imapIO.IMAPError):
+            self.serverDummy.cd = lambda: None
+            self.serverDummy.list = lambda: ('xxx', [])
+            self.serverDummy.folders
+        self.serverDummy.list = lambda: ('OK', [''])
+        self.serverDummy.folders
+        self.serverDummy.list = lambda: ('OK', [('()', '"/"', 'xxx')])
+        self.serverDummy.folders
+
+    def test_cd(self):
+        self.serverDummy.select = lambda: ('xxx', [])
+        self.serverDummy.cd()
+
+    def test_walk(self):
+        self.serverDummy.capabilities = []
+        with self.assertRaises(imapIO.IMAPError):
+            self.serverDummy.walk(sortCriterion='ARRIVAL').next()
+        self.serverDummy.cd = lambda a='': None
+        self.serverDummy.list = lambda: ('OK', ['() "/" aaa', '() "/" bbb'])
+        self.serverDummy.uid = lambda a, b, c, d: ('xxx', [])
+        with self.assertRaises(StopIteration):
+            self.serverDummy.walk('bbb').next()
+        self.serverDummy.uid = lambda a, b, c, d=None: ('OK' if a.startswith('s') else 'xxx', ['1'])
+        with self.assertRaises(StopIteration):
+            self.serverDummy.walk('bbb').next()
+
+
+class IMAP4Dummy(imapIO._IMAPExtension):
+    
+    user = ''
+    host = ''
+    port = ''
+    error = Exception
+
+
+def test_normalize_nickname():
+    assert imapIO.normalize_nickname('person.one@example.com') == 'Person One'
+    assert imapIO.normalize_nickname('Mr. Person <person.one@example.com>') == 'Mr Person'
+
+
+def test_utf_7_imap4():
+    WORD = 'Спасибо'.decode('utf-8')
+    assert WORD.encode(CODEC_NAME).decode(CODEC_NAME) == WORD
