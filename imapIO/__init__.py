@@ -340,7 +340,7 @@ class Email(object):
 
 def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', bccWhom='', bodyText='', bodyHTML='', attachmentPaths=None):
     'Build MIME message'
-    subject, bodyText, bodyHTML = map(strip_illegal_characters, subject, bodyText, bodyHTML)
+    subject, bodyText, bodyHTML = map(strip_illegal_characters, [subject, bodyText, bodyHTML])
     mimeText = email.MIMEText.MIMEText(bodyText.encode('utf-8'), _charset='utf-8')
     mimeHTML = email.MIMEText.MIMEText(bodyHTML.encode('utf-8'), 'html')
     if attachmentPaths:

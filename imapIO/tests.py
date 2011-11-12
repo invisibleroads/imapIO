@@ -246,10 +246,13 @@ class TestExceptions_Email(unittest.TestCase):
 
 class IMAP4Dummy(imapIO._IMAPExtension):
     
-    user = ''
-    host = ''
+    host = 'imap.mail.yahoo.com'
     port = ''
+    user = ''
     error = Exception
+
+    def xatom(self, a):
+        pass
 
 
 def test_build_message():
