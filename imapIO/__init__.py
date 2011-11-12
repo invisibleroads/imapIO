@@ -29,6 +29,10 @@ PATTERN_DOMAIN = re.compile(r'@[^,]+|/[^,]+')
 class _IMAPExtension(object):
     'Mixin class that extends the IMAP interface'
 
+    def __init__(self):
+        if 'imap.mail.yahoo.com' == self.host.lower():
+            self.xatom('ID ("GUID" "1")')
+
     def __str__(self):
         return '%s@%s:%s' % (self.user, self.host, self.port)
 
@@ -336,6 +340,7 @@ class Email(object):
 
 def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', bccWhom='', bodyText='', bodyHTML='', attachmentPaths=None):
     'Build MIME message'
+    subject, bodyText, bodyHTML = map(strip_illegal_characters, subject, bodyText, bodyHTML)
     mimeText = email.MIMEText.MIMEText(bodyText.encode('utf-8'), _charset='utf-8')
     mimeHTML = email.MIMEText.MIMEText(bodyHTML.encode('utf-8'), 'html')
     if attachmentPaths:
@@ -445,3 +450,7 @@ def normalize_nickname(text):
     if not nickname:
         nickname = address
     return PATTERN_WHITESPACE.sub(' ', PATTERN_DOMAIN.sub('', nickname).replace('.', ' ').replace('_', ' ')).strip('" ').title()
+
+
+def strip_illegal_characters(x):
+    return x.replace(chr(0), '')
