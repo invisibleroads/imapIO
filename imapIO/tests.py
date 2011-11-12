@@ -111,6 +111,7 @@ class Base(object):
             targetPath = tempfile.mkstemp(suffix='.gz')[1]
             self.temporaryPaths.append(targetPath)
             email.save(targetPath)
+            partPacks = imapIO.extract_parts(targetPath, [100])
             partPacks = imapIO.extract_parts(targetPath)
             attachmentPathByName = dict((os.path.basename(x), x) for x in case['attachmentPaths'] or [])
             # Make sure the email contains all attachments
@@ -158,37 +159,89 @@ class TestIMAP4_SSL(unittest.TestCase, Base):
             self.server = imapIO.connect(host, port, user, password)
 
 
-class TestExceptions(unittest.TestCase):
+class TestExceptions_IMAPExtension(unittest.TestCase):
 
     def setUp(self):
-        self.serverDummy = IMAP4Dummy()
+        self.server = IMAP4Dummy()
 
     def test_folders(self):
         with self.assertRaises(imapIO.IMAPError):
-            self.serverDummy.cd = lambda: None
-            self.serverDummy.list = lambda: ('xxx', [])
-            self.serverDummy.folders
-        self.serverDummy.list = lambda: ('OK', [''])
-        self.serverDummy.folders
-        self.serverDummy.list = lambda: ('OK', [('()', '"/"', 'xxx')])
-        self.serverDummy.folders
+            self.server.cd = lambda: None
+            self.server.list = lambda: ('xxx', [])
+            self.server.folders
+        self.server.list = lambda: ('OK', [''])
+        self.server.folders
+        self.server.list = lambda: ('OK', [('()', '"/"', 'xxx')])
+        self.server.folders
 
     def test_cd(self):
-        self.serverDummy.select = lambda: ('xxx', [])
-        self.serverDummy.cd()
+        self.server.select = lambda: ('xxx', [])
+        self.server.cd()
 
     def test_walk(self):
-        self.serverDummy.capabilities = []
+        self.server.capabilities = []
         with self.assertRaises(imapIO.IMAPError):
-            self.serverDummy.walk(sortCriterion='ARRIVAL').next()
-        self.serverDummy.cd = lambda a='': None
-        self.serverDummy.list = lambda: ('OK', ['() "/" aaa', '() "/" bbb'])
-        self.serverDummy.uid = lambda a, b, c, d: ('xxx', [])
+            self.server.walk(sortCriterion='ARRIVAL').next()
+        self.server.cd = lambda a='': None
+        self.server.list = lambda: ('OK', ['() "/" aaa', '() "/" bbb'])
+        self.server.uid = lambda a, b, c, d: ('xxx', [])
         with self.assertRaises(StopIteration):
-            self.serverDummy.walk('bbb').next()
-        self.serverDummy.uid = lambda a, b, c, d=None: ('OK' if a.startswith('s') else 'xxx', ['1'])
+            self.server.walk('bbb').next()
+        self.server.uid = lambda a, b, c, d=None: ('OK' if a.startswith('s') else 'xxx', ['1'])
         with self.assertRaises(StopIteration):
-            self.serverDummy.walk('bbb').next()
+            self.server.walk('bbb').next()
+
+    def test_revive(self):
+        self.server.cd = lambda a='': None
+        self.server.list = lambda: ('OK', ['() "/" aaa'])
+        self.server.create = lambda a: None
+        self.server.append = lambda a, b, c, d: ('xxx', [])
+        with self.assertRaises(imapIO.IMAPError):
+            self.server.revive('bbb', imapIO.build_message())
+
+
+class TestExceptions_Email(unittest.TestCase):
+
+    def setUp(self):
+        self.server = IMAP4Dummy()
+        self.email = imapIO.Email(self.server, None, '', '')
+
+    def test_decode(self):
+        decode_header = imapIO.decode_header
+        def raise_exception(a):
+            raise imapIO.HeaderParseError
+        imapIO.decode_header = raise_exception
+        imapIO.Email(self.server, None, '', '')
+        imapIO.decode_header = decode_header
+
+    def test_flags(self):
+        self.server.uid = lambda a, b, c, d=None: ('xxx', [])
+        with self.assertRaises(imapIO.IMAPError):
+            self.email.flags
+        with self.assertRaises(imapIO.IMAPError):
+            self.email.flags = ''
+        with self.assertRaises(imapIO.IMAPError):
+            self.email.seen = True
+        self.server.uid = lambda a, b, c, d=None: ('OK', [''])
+        self.email.deleted
+
+    def test_as_string(self):
+        self.server.uid = lambda a, b, c, d=None: ('OK' if c == '(FLAGS)' else 'xxx', ['1'])
+        with self.assertRaises(imapIO.IMAPError):
+            self.email.as_string()
+        def raise_exception(a, b, c):
+            raise imapIO.imaplib.IMAP4.abort
+        self.server.uid = raise_exception
+        with self.assertRaises(imapIO.IMAPError):
+            self.email.as_string()
+
+    def test_getitem(self):
+        self.email['from']
+        self.email['fromWhom']
+
+    def test_setitem(self):
+        self.email['from'] = ''
+        self.email['fromWhom'] = ''
 
 
 class IMAP4Dummy(imapIO._IMAPExtension):
@@ -199,6 +252,17 @@ class IMAP4Dummy(imapIO._IMAPExtension):
     error = Exception
 
 
+def test_build_message():
+    imapIO.mimetypes.guess_type = lambda a: (None, None)
+    imapIO.build_message(attachmentPaths=['MANIFEST.in'])
+    imapIO.mimetypes.guess_type = lambda a: ('image/xxx', None)
+    imapIO.build_message(attachmentPaths=['MANIFEST.in'])
+    imapIO.mimetypes.guess_type = lambda a: ('audio/xxx', None)
+    imapIO.build_message(attachmentPaths=['MANIFEST.in'])
+    imapIO.mimetypes.guess_type = lambda a: ('xxx/xxx', None)
+    imapIO.build_message(attachmentPaths=['MANIFEST.in'])
+
+
 def test_normalize_nickname():
     assert imapIO.normalize_nickname('person.one@example.com') == 'Person One'
     assert imapIO.normalize_nickname('Mr. Person <person.one@example.com>') == 'Mr Person'
@@ -207,3 +271,4 @@ def test_normalize_nickname():
 def test_utf_7_imap4():
     WORD = 'Спасибо'.decode('utf-8')
     assert WORD.encode(CODEC_NAME).decode(CODEC_NAME) == WORD
+    assert 'one&'.encode(CODEC_NAME).decode(CODEC_NAME) == 'one&'

@@ -23,7 +23,7 @@ Usage
     messageCount = server.cd(random.choice(server.folders))
 
     # Walk messages in inbox sorted by arrival time
-    for email in server.walk(includes='inbox', sortCriterion='ARRIVAL'):
+    for email in server.walk('inbox', sortCriterion='ARRIVAL'):
         # Show information
         print
         print 'Date: %s' % email.whenUTC
@@ -39,7 +39,7 @@ Usage
 
     # Walk messages satisfying search criterion
     emailCriterion = 'BEFORE 23-JAN-2005'
-    emailGenerator = server.walk(excludes=['public', 'trash'], searchCriterion=emailCriterion)
+    emailGenerator = server.walk(lambda folder: folder not in ['public', 'trash'], searchCriterion=emailCriterion)
     for emailIndex, email in enumerate(emailGenerator):
         # Show flags
         print

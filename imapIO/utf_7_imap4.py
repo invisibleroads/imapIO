@@ -5,13 +5,13 @@ import codecs
 CODEC_NAME = 'utf-7-imap4'
 
 
-class StreamWriter(codecs.StreamWriter):
+class StreamWriter(codecs.StreamWriter): # pragma: no cover
 
     def encode(self, s, errors='strict'):
         return encode(s)
 
 
-class StreamReader(codecs.StreamReader):
+class StreamReader(codecs.StreamReader): # pragma: no cover
 
     def decode(self, s, errors='strict'):
         return decode(s)
@@ -70,7 +70,7 @@ def decode_mb64(s):
 codecPack = encode, decode, StreamReader, StreamWriter
 try:
     codecPack = codecs.CodecInfo(*codecPack, name=CODEC_NAME)
-except AttributeError:
+except AttributeError: # pragma: no cover
     pass
 
 

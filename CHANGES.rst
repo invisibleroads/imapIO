@@ -3,6 +3,7 @@
 - Modified walk() to accept a generic function to filter folders
 - Removed clean_tag(), parse_tags, format_tags()
 - Added utf-7-imap4 codec to parse folder names
+- Increased test coverage to 100%
 
 
 0.9.3

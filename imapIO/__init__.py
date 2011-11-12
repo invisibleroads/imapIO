@@ -125,7 +125,7 @@ class _IMAPExtension(object):
         return data[0]
 
 
-class IMAP4(_IMAPExtension, imaplib.IMAP4):
+class IMAP4(_IMAPExtension, imaplib.IMAP4): # pragma: no cover
     'Extended IMAP4 client class'
 
     def __init__(self, host='', port=imaplib.IMAP4_PORT):
@@ -153,7 +153,7 @@ class IMAP4(_IMAPExtension, imaplib.IMAP4):
         return server
 
 
-class IMAP4_SSL(_IMAPExtension, imaplib.IMAP4_SSL):
+class IMAP4_SSL(_IMAPExtension, imaplib.IMAP4_SSL): # pragma: no cover
     'Extended IMAP4 client class over SSL connection'
 
     def __init__(self, host='', port=imaplib.IMAP4_SSL_PORT, keyfile=None, certfile=None):
