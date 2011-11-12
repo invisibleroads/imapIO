@@ -201,7 +201,7 @@ class Email(object):
         # Parse header
         valueByKey = HeaderParser().parsestr(header)
         def getWhom(field):
-            return ', '.join(formataddr((self._decode(x), y)) for x, y in getaddresses(valueByKey.get_all(field, [])))
+            return ', '.join(formataddr((self._decode(x), self._decode(y))) for x, y in getaddresses(valueByKey.get_all(field, [])))
         # Extract fields
         self.date = valueByKey.get('date')
         timePack = parsedate_tz(self.date)

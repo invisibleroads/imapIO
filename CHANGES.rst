@@ -1,6 +1,7 @@
 0.9.4
 -----
 - Modified walk() to accept a generic function to filter folders
+- Modified Email.__init__() to apply _decode() to both parts of an email address
 - Removed clean_tag(), parse_tags, format_tags()
 - Added utf-7-imap4 codec to parse folder names
 - Increased test coverage to 100%
