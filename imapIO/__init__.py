@@ -28,6 +28,7 @@ PATTERN_DOMAIN = re.compile(r'@[^,]+|/[^,]+')
 
 class _IMAPExtension(object):
     'Mixin class that extends the IMAP interface'
+    host = ''
 
     def __init__(self):
         if 'imap.mail.yahoo.com' == self.host.lower():
