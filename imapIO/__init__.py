@@ -1,24 +1,24 @@
 'IMAP mailbox wrapper'
-import re
-import os
-import gzip
-import email
-import random
 import chardet
-import imaplib
 import datetime
-import mimetypes
+import email
+import gzip
+import imaplib
 import logging; log = logging.getLogger(__name__)
+import mimetypes
+import os
+import random
+import re
 from calendar import timegm
 from email.generator import Generator
+from email.header import decode_header, HeaderParseError
 from email.parser import HeaderParser
 from email.utils import mktime_tz, parsedate_tz, formatdate, parseaddr, formataddr, getaddresses
-from email.header import decode_header, HeaderParseError
 
 from imapIO import utf_7_imap4
 
 
-__all__ = ['IMAP4', 'IMAP4_SSL', 'IMAPError', 'Email', 'build_message', 'normalize_nickname', 'connect', 'extract_parts']
+__all__ = ['IMAP4', 'IMAP4_SSL', 'IMAPError', 'Email', 'build_message', 'normalize_nickname', 'connect', 'extract']
 
 
 PATTERN_FOLDER = re.compile(r'\((?P<flags>.*?)\) "(?P<delimiter>.*)" (?:\{.*\})?(?P<name>.*)')
@@ -28,6 +28,7 @@ PATTERN_DOMAIN = re.compile(r'@[^,]+|/[^,]+')
 
 class _IMAPExtension(object):
     'Mixin class that extends the IMAP interface'
+
     host = ''
 
     def __init__(self):
@@ -35,11 +36,11 @@ class _IMAPExtension(object):
             self.xatom('ID ("GUID" "1")')
 
     def __str__(self):
-        return '%s@%s:%s' % (self.user, self.host, self.port)
+        return '%s:%s %s' % (self.host, self.port, self.user)
 
     def format_error(self, text, data):
         'Format an error that happened with a server'
-        return '[%s] %s%s' % (self, text, '\n' + repr(data))
+        return '[%s]\n%s\n%s' % (self, text, str(data))
 
     @property
     def folders(self):
@@ -52,7 +53,7 @@ class _IMAPExtension(object):
         for item in data:
             if not item:
                 continue
-            if isinstance(item, tuple):
+            if hasattr(item, '__iter__'):
                 item = ' '.join(item)
             folders.append(PATTERN_FOLDER.match(item).groups()[2].lstrip())
         return folders
@@ -71,6 +72,12 @@ class _IMAPExtension(object):
         Without arguments, it will yield messages in random order.
         Specify a folder, a list of folders or a function as the first argument.
         See IMAP specification for details on search and sort criteria.
+
+        Yield messages from folders that start with the letter A.
+            server.walk(lambda folder: folder.upper().startswith('A'))
+
+        Yield messages from non-trash folders.
+            server.walk(lambda folder: folder.lower() not in ['trash', 'spam'])
         """
         include = make_folderFilter(include)
         searchCriterion = '(%s)' % searchCriterion.encode('utf-8')
@@ -95,7 +102,7 @@ class _IMAPExtension(object):
             except self.error, error:
                 log.warn(self.format_error("[%s] Could not load messageUIDs" % folder, error))
                 continue
-            messageUIDs = map(int, data[0].split())
+            messageUIDs = [int(x) for x in data[0].split()]
             if shuffleMessages and not sortCriterion:
                 random.shuffle(messageUIDs)
             # Walk messages
@@ -219,9 +226,17 @@ class Email(object):
         self.ccWhom = getWhom('cc')
         self.bccWhom = getWhom('bcc')
 
-    def format_error(self, text, data):
-        'Format an error that happened with a message'
-        return self.server.format_error('[%s UID=%s] %s' % (self.folder, self.uid, text), data)
+    def __getitem__(self, key):
+        keyLower = key.lower()
+        if keyLower in ['from', 'to', 'cc', 'bcc']:
+            return getattr(self, keyLower + 'Whom')
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        keyLower = key.lower()
+        if keyLower in ['from', 'to', 'cc', 'bcc']:
+            return setattr(self, keyLower + 'Whom', value)
+        return setattr(self, key, value)
 
     def _decode(self, text):
         'Decode text into utf-8'
@@ -236,6 +251,10 @@ class Email(object):
         string = ''.join(part.decode(encoding or 'utf-8', 'ignore') for part, encoding in packs)
         return PATTERN_WHITESPACE.sub(' ', string.strip())
 
+    def format_error(self, text, data):
+        'Format an error that happened with a message'
+        return self.server.format_error('[%s UID=%s] %s' % (self.folder, self.uid, text), data)
+
     @property
     def flags(self):
         'Get flags'
@@ -243,7 +262,7 @@ class Email(object):
         if r != 'OK':
             raise IMAPError(self.format_error('Could not get flags', data))
         string = data[0]
-        return imaplib.ParseFlags(string) if data else ()
+        return imaplib.ParseFlags(string) if string else ()
 
     @flags.setter
     def flags(self, flags):
@@ -291,18 +310,21 @@ class Email(object):
 
     def as_string(self, unixfrom=False):
         'Fetch mime string from server'
-        try:
-            # Get
-            flags = self.flags
-            # Load message
-            r, data = self.server.uid('fetch', self.uid, '(RFC822)')
-            if r != 'OK':
-                raise IMAPError(self.format_error('Could not fetch message body', data))
-            # Restore
-            self.flags = flags
-        except imaplib.IMAP4.abort, error:
-            raise IMAPError(self.format_error('Connection failed while fetching message body', error))
-        return data[0][1]
+        if not hasattr(self, '_string'):
+            try:
+                # Get
+                flags = self.flags
+                # Load message
+                r, data = self.server.uid('fetch', self.uid, '(RFC822)')
+                if r != 'OK':
+                    raise IMAPError(self.format_error('Could not fetch body', data))
+                # Restore
+                self.flags = flags
+            except imaplib.IMAP4.abort, error:
+                message = 'Connection failed while fetching body'
+                raise IMAPError(self.format_error(message, error))
+            self._string = data[0][1]
+        return self._string
 
     def as_message(self):
         'Fetch mime string from server and convert to email.message.Message'
@@ -321,22 +343,17 @@ class Email(object):
         # Gather partPacks
         partPacks = []
         for partIndex, part in enumerate(message.walk()):
-            if 'multipart' == part.get_content_maintype():
+            mainType = part.get_content_maintype()
+            if 'multipart' == mainType:
                 continue
-            partPacks.append((partIndex, part.get_filename(), part.get_content_type()))
+            partName = part.get_filename() or ''
+            partType = part.get_content_type() or ''
+            partPack = partIndex, partName, partType
+            partPacks.append(partPack)
         return partPacks
 
-    def __getitem__(self, key):
-        keyLower = key.lower()
-        if keyLower in ['from', 'to', 'cc', 'bcc']:
-            return getattr(self, keyLower + 'Whom')
-        return getattr(self, key)
-
-    def __setitem__(self, key, value):
-        keyLower = key.lower()
-        if keyLower in ['from', 'to', 'cc', 'bcc']:
-            return setattr(self, keyLower + 'Whom', value)
-        return setattr(self, key, value)
+    def extract(self, include=lambda index, name, type: True, peek=False, applyCharset=True):
+        return extract(self.as_message(), include, peek, applyCharset)
 
 
 def build_message(whenUTC=None, subject='', fromWhom='', toWhom='', ccWhom='', bccWhom='', bodyText='', bodyHTML='', attachmentPaths=None):
@@ -397,26 +414,33 @@ def connect(host='', port=None, user='', password='', keyfile=None, certfile=Non
     return IMAP4_SSL.connect(host, port, user, password, keyfile, certfile)
 
 
-def extract_parts(sourcePath, partIndices=None, peek=False, applyCharset=True):
+def extract(source, include=lambda index, name, type: True, peek=False, applyCharset=True):
     """
-    Get attachment from email sourcePath.
-    Set partIndices=None to see all parts.
+    Get message parts, where source is either an instance of 
+    MIMEMessage or a path to a file containing a MIMEMessage.
+
+    Set include=lambda index, name, type: type.startswith('image') to extract images only.
     Set peek=True to omit the payload.
     Set applyCharset=True to decode the payload into unicode.
     """
-    if not hasattr(partIndices, '__iter__'):
-        partIndices = [partIndices] if partIndices else []
-    message = email.message_from_file(gzip.open(sourcePath, 'rb') if sourcePath.endswith('.gz') else open(sourcePath, 'rb'))
+    if hasattr(source, 'walk'):
+        message = source
+    else:
+        sourceFile = gzip.open(source, 'rb') if source.endswith('.gz') else open(source, 'rb')
+        message = email.message_from_file(sourceFile)
     partPacks = []
     for partIndex, part in enumerate(message.walk()):
-        if 'multipart' == part.get_content_maintype():
+        mainType = part.get_content_maintype()
+        if 'multipart' == mainType:
             continue
-        if partIndices and partIndex not in partIndices:
+        partName = part.get_filename() or ''
+        partType = part.get_content_type() or ''
+        partPack = partIndex, partName, partType
+        if not include(*partPack):
             continue
-        partPack = partIndex, part.get_filename() or '', part.get_content_type() or ''
         if not peek:
             payload = part.get_payload(decode=True) or ''
-            if applyCharset:
+            if 'text' == mainType and applyCharset:
                 charset = part.get_content_charset() or part.get_charset() or chardet.detect(payload)['encoding']
                 payload = payload.decode(charset, 'ignore')
             partPack += (payload,)

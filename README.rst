@@ -20,9 +20,9 @@ Usage
 
     # Select folder
     import random
-    messageCount = server.cd(random.choice(server.folders))
+    emailCount = server.cd(random.choice(server.folders))
 
-    # Walk messages in inbox sorted by arrival time
+    # Walk emails in inbox sorted by arrival time
     for email in server.walk('inbox', sortCriterion='ARRIVAL'):
         # Show information
         print
@@ -37,7 +37,7 @@ Usage
         email.seen = False
         email.deleted = False
 
-    # Walk messages satisfying search criterion
+    # Walk emails satisfying search criterion
     emailCriterion = 'BEFORE 23-JAN-2005'
     emailGenerator = server.walk(lambda folder: folder not in ['public', 'trash'], searchCriterion=emailCriterion)
     for emailIndex, email in enumerate(emailGenerator):
@@ -48,10 +48,10 @@ Usage
         emailPath = '%s.gz' % emailIndex
         partPacks = email.save(emailPath)
         # Extract attachments from email on hard drive
-        for partIndex, filename, contentType, payload in imapIO.extract_parts(emailPath):
+        for partIndex, filename, contentType, payload in imapIO.extract(emailPath):
             print len(payload), filename.encode('utf-8')
 
-    # Create a message in the inbox
+    # Create an email in the inbox
     import datetime
     server.revive('inbox', imapIO.build_message(
         whenUTC=datetime.datetime(2005, 1, 23, 1, 0),
@@ -66,11 +66,19 @@ Usage
             'CHANGES.rst',
             'README.rst',
         ]))
+    # Load email
     email = server.walk('inbox', searchCriterion='FROM from@example.com TO to@example.com').next()
+    # Browse attachments in email
+    partPacks = email.extract(
+        include=lambda index, name, type: name.lower().endswith('.rst'),
+        peek=True)
+    for partIndex, filename, contentType in partPacks:
+        print filename
+    # Delete email
     email.deleted = True
     server.expunge()
 
-    # Duplicate a message from one server to another
+    # Duplicate an email from one server to another
     server1 = imapIO.connect(host1, port1, user1, password1)
     server2 = imapIO.connect(host2, port2, user2, password2)
     server2.revive('inbox', server1.walk().next())

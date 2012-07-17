@@ -11,7 +11,7 @@ CHANGES = open(os.path.join(here, 'CHANGES.rst')).read()
 
 setup(
     name='imapIO',
-    version='0.9.4',
+    version='0.9.5',
     description='Convenience classes and methods for processing IMAP mailboxes',
     long_description=README + '\n\n' +  CHANGES,
     license='MIT',

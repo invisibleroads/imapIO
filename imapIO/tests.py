@@ -110,9 +110,9 @@ class Base(object):
             # Save
             targetPath = tempfile.mkstemp(suffix='.gz')[1]
             self.temporaryPaths.append(targetPath)
+            email.extract(lambda index, name, type: 'text/html' == type, peek=True)
             email.save(targetPath)
-            partPacks = imapIO.extract_parts(targetPath, [100])
-            partPacks = imapIO.extract_parts(targetPath)
+            partPacks = imapIO.extract(targetPath)
             attachmentPathByName = dict((os.path.basename(x), x) for x in case['attachmentPaths'] or [])
             # Make sure the email contains all attachments
             self.assertEqual(set(attachmentPathByName) - set(x[1] for x in partPacks), set())
